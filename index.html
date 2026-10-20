@@ -208,6 +208,7 @@
           <div class="rounded-lg bg-slate-50 py-2"><dt class="text-xs text-slate-400">字数</dt><dd id="infoWords" class="mt-0.5 font-medium tabular">0</dd></div>
           <div class="rounded-lg bg-slate-50 py-2"><dt class="text-xs text-slate-400">段落</dt><dd id="infoSegs" class="mt-0.5 font-medium tabular">0</dd></div>
         </dl>
+        <div id="speedInfo" class="hidden mb-4 rounded-lg bg-emerald-50 text-emerald-700 text-xs px-3 py-2 tabular"></div>
         <div class="flex items-center justify-between text-xs text-slate-400 mb-2">
           <span>发言人占比</span><span>点击文字记录中的发言人可修改</span>
         </div>
@@ -350,15 +351,15 @@
       <div>
         <div class="text-slate-500 text-xs mb-2">识别方式</div>
         <div class="grid grid-cols-2 gap-3">
-          <label class="engine-card cursor-pointer rounded-lg border p-3" data-engine="local">
-            <input type="radio" name="engine" value="local" class="hidden" />
-            <div class="font-medium text-slate-900">本地识别</div>
-            <div class="mt-1 text-xs text-slate-500 leading-5">浏览器内运行 Whisper 模型，免费，音频不出本机。首次需下载模型，速度取决于电脑性能。</div>
-          </label>
           <label class="engine-card cursor-pointer rounded-lg border p-3" data-engine="cloud">
             <input type="radio" name="engine" value="cloud" class="hidden" />
-            <div class="font-medium text-slate-900">云端 API</div>
-            <div class="mt-1 text-xs text-slate-500 leading-5">使用你自己的语音识别 API Key，分片并行识别，数小时的录音几分钟内完成，按服务商价格计费。</div>
+            <div class="font-medium text-slate-900">云端极速识别 <span class="ml-1 text-[11px] px-1.5 py-0.5 rounded bg-blue-600 text-white align-middle">推荐</span></div>
+            <div class="mt-1 text-xs text-slate-500 leading-5">音频压缩后切片，多路并行识别，1 小时录音约 1 分钟内完成。需要你自己的 API Key，按服务商价格计费。</div>
+          </label>
+          <label class="engine-card cursor-pointer rounded-lg border p-3" data-engine="local">
+            <input type="radio" name="engine" value="local" class="hidden" />
+            <div class="font-medium text-slate-900">本地识别（离线，较慢）</div>
+            <div class="mt-1 text-xs text-slate-500 leading-5">浏览器内运行 Whisper 模型，免费，音频不出本机。速度取决于电脑，1 小时录音可能需要十几分钟以上。</div>
           </label>
         </div>
       </div>
@@ -385,6 +386,11 @@
 
       <!-- 云端识别设置 -->
       <div id="cloudBox" class="space-y-3">
+        <div id="keyGuide" class="rounded-lg bg-blue-50 border border-blue-100 px-3 py-2.5 text-xs text-blue-800 leading-5">
+          要达到“1 小时录音 1 分钟内识别完”，推荐使用 <b>Groq</b>（Whisper large-v3-turbo，目前最快的公开语音识别服务）：在
+          <a href="https://console.groq.com/keys" target="_blank" rel="noopener" class="underline">console.groq.com/keys</a> 注册并创建 API Key，粘贴到下方。
+          国内网络无法直连 Groq 时，可选择<b>硅基流动</b>（<a href="https://cloud.siliconflow.cn/account/ak" target="_blank" rel="noopener" class="underline">cloud.siliconflow.cn</a>）。
+        </div>
         <div class="grid grid-cols-2 gap-3">
           <label class="block"><span class="text-xs text-slate-500">服务商（OpenAI 兼容接口）</span>
             <select id="sPreset" class="field mt-1">
@@ -404,9 +410,10 @@
         <label class="block"><span class="text-xs text-slate-500">API Key</span>
           <input id="sCloudKey" type="password" class="field mt-1" placeholder="sk-..." autocomplete="off" />
         </label>
-        <label class="block w-40"><span class="text-xs text-slate-500">并行分片数</span>
-          <input id="sCloudConc" type="number" min="1" max="8" class="field mt-1" />
+        <label class="block w-40"><span class="text-xs text-slate-500">并行请求数（1-32）</span>
+          <input id="sCloudConc" type="number" min="1" max="32" class="field mt-1" />
         </label>
+        <p class="text-xs text-slate-400 leading-5">并行越多越快。服务商的免费额度通常有每分钟请求数和每小时音频时长的限制，超出后会被限流；处理几个小时的录音建议升级到付费档位。</p>
       </div>
 
       <!-- 识别语言 -->
@@ -559,21 +566,28 @@ const state = {
 const PRESETS = {
   groq:        { base: 'https://api.groq.com/openai/v1',   asr: 'whisper-large-v3-turbo',      llm: 'llama-3.3-70b-versatile' },
   openai:      { base: 'https://api.openai.com/v1',        asr: 'whisper-1',                   llm: 'gpt-4o-mini' },
-  siliconflow: { base: 'https://api.siliconflow.cn/v1',    asr: 'FunAudioLLM/SenseVoiceSmall', llm: 'Qwen/Qwen2.5-72B-Instruct' },
+  // SenseVoice 只返回整段文字、没有句级时间戳，因此切成 30 秒的小段以保证时间定位精度
+  siliconflow: { base: 'https://api.siliconflow.cn/v1',    asr: 'FunAudioLLM/SenseVoiceSmall', llm: 'Qwen/Qwen2.5-72B-Instruct', textOnly: true },
   custom:      { base: '', asr: '', llm: '' }
 };
 const DEFAULT_SETTINGS = {
-  engine: 'local',
+  v: 2,
+  engine: 'cloud',
   localModel: 'onnx-community/whisper-base',
   localDevice: 'auto',
   preset: 'groq',
-  cloudBase: PRESETS.groq.base, cloudKey: '', cloudModel: PRESETS.groq.asr, cloudConc: 4,
+  cloudBase: PRESETS.groq.base, cloudKey: '', cloudModel: PRESETS.groq.asr, cloudConc: 16,
   lang: 'zh',
   llmOn: false, llmBase: PRESETS.groq.base, llmKey: '', llmModel: PRESETS.groq.llm
 };
 // 设置保存在本机浏览器（localStorage 不可用时仅本次有效）
 let settings = { ...DEFAULT_SETTINGS };
-try { Object.assign(settings, JSON.parse(localStorage.getItem('tingyu-settings') || '{}')); } catch (e) {}
+try {
+  const saved = JSON.parse(localStorage.getItem('tingyu-settings') || '{}');
+  Object.assign(settings, saved);
+  // 旧版本默认是本地识别：升级为云端极速识别
+  if ((saved.v || 1) < 2) Object.assign(settings, { v: 2, engine: 'cloud', cloudConc: 16 });
+} catch (e) {}
 function saveSettings() { try { localStorage.setItem('tingyu-settings', JSON.stringify(settings)); } catch (e) {} }
 
 const $ = (id) => document.getElementById(id);
@@ -1348,30 +1362,50 @@ async function parseWav(file) {
   }
   return null;
 }
+// WAV 原始字节 → 单声道浮点
+function wavToMono(dv, w) {
+  const bps = w.bits / 8;
+  const n = Math.floor(dv.byteLength / w.align);
+  const out = new Float32Array(n);
+  if (w.format === 1 && bps === 2) { // 最常见的 16 位 PCM：走快速路径
+    const a = new Int16Array(dv.buffer, dv.byteOffset, n * w.ch);
+    for (let i = 0; i < n; i++) {
+      let sum = 0;
+      for (let c = 0; c < w.ch; c++) sum += a[i * w.ch + c];
+      out[i] = sum / w.ch / 32768;
+    }
+    return out;
+  }
+  for (let i = 0; i < n; i++) {
+    let sum = 0;
+    for (let c = 0; c < w.ch; c++) {
+      const o = i * w.align + c * bps;
+      let v;
+      if (w.format === 3) v = bps === 8 ? dv.getFloat64(o, true) : dv.getFloat32(o, true);
+      else if (bps === 1) v = (dv.getUint8(o) - 128) / 128;
+      else if (bps === 2) v = dv.getInt16(o, true) / 32768;
+      else if (bps === 3) v = ((dv.getUint8(o) | (dv.getUint8(o + 1) << 8) | (dv.getInt8(o + 2) << 16))) / 8388608;
+      else v = dv.getInt32(o, true) / 2147483648;
+      sum += v;
+    }
+    out[i] = sum / w.ch;
+  }
+  return out;
+}
 async function* wavPieces(file, w) {
   const frames = 60 * w.sr; // 每次读 60 秒
-  const bps = w.bits / 8;
   for (let pos = 0; pos < w.dataSize; pos += frames * w.align) {
     const len = Math.min(frames * w.align, w.dataSize - pos);
     const dv = new DataView(await file.slice(w.offset + pos, w.offset + pos + len).arrayBuffer());
-    const n = Math.floor(dv.byteLength / w.align);
-    const out = new Float32Array(n);
-    for (let i = 0; i < n; i++) {
-      let sum = 0;
-      for (let c = 0; c < w.ch; c++) {
-        const o = i * w.align + c * bps;
-        let v;
-        if (w.format === 3) v = bps === 8 ? dv.getFloat64(o, true) : dv.getFloat32(o, true);
-        else if (bps === 1) v = (dv.getUint8(o) - 128) / 128;
-        else if (bps === 2) v = dv.getInt16(o, true) / 32768;
-        else if (bps === 3) v = ((dv.getUint8(o) | (dv.getUint8(o + 1) << 8) | (dv.getInt8(o + 2) << 16))) / 8388608;
-        else v = dv.getInt32(o, true) / 2147483648;
-        sum += v;
-      }
-      out[i] = sum / w.ch;
-    }
-    yield await resampleTo16k(out, w.sr);
+    yield await resampleTo16k(wavToMono(dv, w), w.sr);
   }
+}
+// 读取 WAV 中 [t0, t1] 秒的音频
+async function wavRange(file, w, t0, t1) {
+  const total = Math.floor(w.dataSize / w.align);
+  const f0 = Math.max(0, Math.floor(t0 * w.sr)), f1 = Math.min(total, Math.ceil(t1 * w.sr));
+  const dv = new DataView(await file.slice(w.offset + f0 * w.align, w.offset + f1 * w.align).arrayBuffer());
+  return { start: f0 / w.sr, pcm: await resampleTo16k(wavToMono(dv, w), w.sr) };
 }
 
 /* ---- MP3 按帧切片 ---- */
@@ -1429,6 +1463,288 @@ async function* pcmSource(file, ext) {
     if (findMp3Sync(head, 0) >= 0) { yield* mp3Pieces(file); return; }
   }
   yield* wholePieces(file);
+}
+
+/* =====================================================================
+ * 十二·五、云端极速识别流水线（1 小时录音约 1 分钟内完成）
+ *   1. 建索引而不是整体解码：MP3 扫描帧表、WAV 读文件头
+ *   2. 按并行路数均分时间段；每段在边界附近的静音处下刀，
+ *      相邻两段按同一套绝对时间网格计算，因此会落在同一个切点上
+ *   3. 多核并行解码 → 16kHz 单声道 → Opus 压缩（体积约为 WAV 的 1/15，上传快）
+ *   4. 多路并行上传识别，结果边返回边显示
+ * ===================================================================== */
+
+// 扫描 MP3 帧表：记录每一帧的字节位置，可以按时间精确切片
+async function scanMp3(file) {
+  const PIECE = 8 << 20;
+  let buf = null, bufStart = 0;
+  const load = async (p) => { bufStart = p; buf = new Uint8Array(await file.slice(p, Math.min(file.size, p + PIECE)).arrayBuffer()); };
+  await load(0);
+  let pos = 0;
+  if (buf[0] === 0x49 && buf[1] === 0x44 && buf[2] === 0x33) { // 跳过 ID3v2 标签（可能含封面图）
+    pos = 10 + (((buf[6] & 0x7f) << 21) | ((buf[7] & 0x7f) << 14) | ((buf[8] & 0x7f) << 7) | (buf[9] & 0x7f)) + ((buf[5] & 0x10) ? 10 : 0);
+    await load(pos);
+  }
+  const first = findMp3Sync(buf, 0);
+  if (first < 0) return null;
+  pos = bufStart + first;
+  const offsets = [];
+  let sr = 0, spf = 0;
+  while (pos + 4 <= file.size) {
+    if (pos < bufStart || pos + 4 > bufStart + buf.length) await load(pos);
+    const i = pos - bufStart;
+    const len = mp3FrameLen(buf, i);
+    if (len) {
+      if (!sr) { const ver = (buf[i + 1] >> 3) & 3; sr = MP3_SR[ver][(buf[i + 2] >> 2) & 3]; spf = ver === 3 ? 1152 : 576; }
+      offsets.push(pos);
+      pos += len;
+      continue;
+    }
+    // 失步（例如中间夹带的标签）：寻找下一个帧头
+    const j = findMp3Sync(buf, i + 1);
+    if (j >= 0) { pos = bufStart + j; continue; }
+    if (bufStart + buf.length >= file.size) break;
+    pos = bufStart + buf.length - 16;
+    await load(pos);
+  }
+  if (offsets.length < 10) return null;
+  return { offsets, frameSec: spf / sr, duration: offsets.length * spf / sr };
+}
+async function mp3Range(file, idx, t0, t1) {
+  const n = idx.offsets.length;
+  const f0 = Math.max(0, Math.min(n - 1, Math.floor(t0 / idx.frameSec)));
+  const f1 = Math.max(f0 + 1, Math.min(n, Math.ceil(t1 / idx.frameSec)));
+  const end = f1 < n ? idx.offsets[f1] : file.size;
+  const pcm = await decodeChunk(await file.slice(idx.offsets[f0], end).arrayBuffer());
+  return { start: f0 * idx.frameSec, pcm };
+}
+
+// 打开音频源：返回总时长和“按时间读取一段 16kHz PCM”的方法
+async function openSource(file, ext) {
+  if (ext === 'wav') {
+    const w = await parseWav(file);
+    if (w) return { duration: w.duration, range: (a, b) => wavRange(file, w, a, b) };
+  }
+  if (ext === 'mp3') {
+    const idx = await scanMp3(file);
+    if (idx) return { duration: idx.duration, range: (a, b) => mp3Range(file, idx, a, b) };
+  }
+  // 其他格式（M4A、视频等）：浏览器整体解码一次
+  if (file.size > 2 * 1024 ** 3) throw new Error('该格式的文件过大，浏览器无法一次解码，请先转换为 MP3 后上传');
+  let all;
+  try { all = await decodeChunk(await file.arrayBuffer()); }
+  catch (e) { const err = new Error('浏览器无法解码该格式（如 WMA、AMR、部分 AVI），请转换为 MP3 / WAV / M4A 后上传'); err.undecodable = true; throw err; }
+  return {
+    duration: all.length / SR,
+    range: async (a, b) => { const i0 = Math.max(0, Math.floor(a * SR)); return { start: i0 / SR, pcm: all.subarray(i0, Math.min(all.length, Math.ceil(b * SR))) }; }
+  };
+}
+
+// 在 [a, b] 秒内找最安静的位置（50ms 窗口，按绝对时间网格对齐）
+function quietAt(r, a, b) {
+  const W = 800, H = 400;
+  let best = (a + b) / 2, bestE = Infinity;
+  for (let g = Math.ceil(a * SR / H) * H; g + W <= b * SR; g += H) {
+    const i = Math.round(g - r.start * SR);
+    if (i < 0 || i + W > r.pcm.length) continue;
+    let e = 0;
+    for (let k = i; k < i + W; k++) e += r.pcm[k] * r.pcm[k];
+    if (e < bestE * 0.999) { bestE = e; best = (g + W / 2) / SR; }
+  }
+  return best;
+}
+// 取第 k 段：多读 4 秒余量，在边界 ±3 秒内的静音处切开
+async function cutPiece(src, bounds, k) {
+  const a = bounds[k], b = bounds[k + 1], D = bounds[bounds.length - 1], M = 4, S = 3;
+  const r = await src.range(Math.max(0, a - M), Math.min(D, b + M));
+  const s = k === 0 ? r.start : quietAt(r, a - S, a + S);
+  const e = k === bounds.length - 2 ? r.start + r.pcm.length / SR : quietAt(r, b - S, b + S);
+  const i0 = Math.max(0, Math.round((s - r.start) * SR)), i1 = Math.min(r.pcm.length, Math.round((e - r.start) * SR));
+  return { start: r.start + i0 / SR, pcm: r.pcm.slice(i0, Math.max(i0, i1)) };
+}
+function levelsOf(pcm) {
+  const a = [];
+  for (let i = 0; i < pcm.length; i += SR * 10) a.push(rms(pcm.subarray(i, i + SR * 10)));
+  return a;
+}
+
+/* ---- Opus 压缩 + Ogg 封装（浏览器内置 WebCodecs 编码器，多核并行） ---- */
+const OPUS_CONFIGS = [
+  { codec: 'opus', sampleRate: SR, numberOfChannels: 1, bitrate: 24000, opus: { complexity: 5, frameDuration: 60000 } },
+  { codec: 'opus', sampleRate: SR, numberOfChannels: 1, bitrate: 24000 }
+];
+let opusProbe = null;
+function canOpus() {
+  return opusProbe || (opusProbe = (async () => {
+    if (typeof AudioEncoder === 'undefined') return null;
+    for (const cfg of OPUS_CONFIGS) {
+      try { if ((await AudioEncoder.isConfigSupported(cfg)).supported) return cfg; } catch (e) {}
+    }
+    return null;
+  })());
+}
+const OGG_CRC = (() => {
+  const t = new Uint32Array(256);
+  for (let i = 0; i < 256; i++) { let r = i << 24; for (let j = 0; j < 8; j++) r = (r & 0x80000000) ? ((r << 1) ^ 0x04c11db7) : (r << 1); t[i] = r >>> 0; }
+  return t;
+})();
+function oggPage(packets, granule, serial, seq, flags) {
+  const lacing = [];
+  for (const p of packets) { let n = p.length; while (n >= 255) { lacing.push(255); n -= 255; } lacing.push(n); }
+  const size = packets.reduce((a, p) => a + p.length, 0);
+  const page = new Uint8Array(27 + lacing.length + size), dv = new DataView(page.buffer);
+  page.set([0x4f, 0x67, 0x67, 0x53]); // "OggS"
+  page[5] = flags;
+  dv.setUint32(6, granule % 4294967296 >>> 0, true);
+  dv.setUint32(10, Math.floor(granule / 4294967296), true);
+  dv.setUint32(14, serial, true);
+  dv.setUint32(18, seq, true);
+  page[26] = lacing.length;
+  page.set(lacing, 27);
+  let o = 27 + lacing.length;
+  for (const p of packets) { page.set(p, o); o += p.length; }
+  let c = 0;
+  for (let i = 0; i < page.length; i++) c = ((c << 8) ^ OGG_CRC[((c >>> 24) ^ page[i]) & 0xff]) >>> 0;
+  dv.setUint32(22, c, true);
+  return page;
+}
+function opusHead(preSkip) {
+  const h = new Uint8Array(19), dv = new DataView(h.buffer);
+  h.set([...'OpusHead'].map(c => c.charCodeAt(0)));
+  h[8] = 1; h[9] = 1; dv.setUint16(10, preSkip, true); dv.setUint32(12, SR, true);
+  return h;
+}
+function buildOgg(head, packets, preSkip, total48) {
+  const serial = (Math.random() * 0xffffffff) >>> 0, pages = [];
+  let seq = 0;
+  pages.push(oggPage([head], 0, serial, seq++, 2));
+  const tags = new Uint8Array(8 + 4 + 6 + 4);
+  tags.set([...'OpusTags'].map(c => c.charCodeAt(0)));
+  tags[8] = 6; tags.set([...'tingyu'].map(c => c.charCodeAt(0)), 12);
+  pages.push(oggPage([tags], 0, serial, seq++, 0));
+  let gran = preSkip, cur = [], segs = 0;
+  const flush = (last) => { pages.push(oggPage(cur, last ? Math.min(gran, preSkip + total48) : gran, serial, seq++, last ? 4 : 0)); cur = []; segs = 0; };
+  for (const p of packets) {
+    const lace = Math.floor(p.data.length / 255) + 1;
+    if (cur.length && (segs + lace > 255 || cur.length >= 50)) flush(false);
+    cur.push(p.data); segs += lace; gran += p.samples48;
+  }
+  flush(true);
+  return pages;
+}
+async function encodeOpusOgg(pcm) {
+  const cfg = await canOpus();
+  const packets = [];
+  let head = null, error = null;
+  const enc = new AudioEncoder({
+    output: (chunk, meta) => {
+      const d = meta?.decoderConfig?.description;
+      if (!head && d) head = new Uint8Array(d instanceof ArrayBuffer ? d.slice(0) : d.buffer.slice(d.byteOffset, d.byteOffset + d.byteLength));
+      const data = new Uint8Array(chunk.byteLength);
+      chunk.copyTo(data);
+      packets.push({ data, samples48: Math.round((chunk.duration || 60000) * 0.048) }); // Opus 时间戳固定按 48kHz 计
+    },
+    error: (e) => (error = e)
+  });
+  enc.configure(cfg);
+  for (let i = 0; i < pcm.length; i += SR * 10) {
+    const d = pcm.subarray(i, Math.min(pcm.length, i + SR * 10));
+    const ad = new AudioData({ format: 'f32', sampleRate: SR, numberOfFrames: d.length, numberOfChannels: 1, timestamp: Math.round(i * 1e6 / SR), data: d });
+    enc.encode(ad);
+    ad.close();
+  }
+  await enc.flush();
+  enc.close();
+  if (error) throw error;
+  if (!head || head.length < 19 || String.fromCharCode(...head.subarray(0, 8)) !== 'OpusHead') head = opusHead(312);
+  const preSkip = head[10] | (head[11] << 8);
+  return new Blob(buildOgg(head, packets, preSkip, pcm.length * 3), { type: 'audio/ogg' });
+}
+// 一段 PCM → 上传用的音频文件（优先 Opus，服务商不接受时改用 WAV）
+async function encodeForUpload(pcm, job) {
+  if (!job?.forceWav && await canOpus()) return { blob: await encodeOpusOgg(pcm), name: 'audio.ogg' };
+  return { blob: encodeWav([pcm], pcm.length), name: 'audio.wav' };
+}
+
+// 并发限制器
+function limiter(n) {
+  let active = 0;
+  const queue = [];
+  const next = () => {
+    while (active < n && queue.length) {
+      const { fn, resolve, reject } = queue.shift();
+      active++;
+      Promise.resolve().then(fn).then(resolve, reject).finally(() => { active--; next(); });
+    }
+  };
+  return (fn) => new Promise((resolve, reject) => { queue.push({ fn, resolve, reject }); next(); });
+}
+
+async function fastCloudTranscribe(file, ext, job) {
+  const preset = PRESETS[settings.preset] || PRESETS.custom;
+  const conc = Math.max(1, Math.min(32, +settings.cloudConc || 16));
+  jobUI('正在读取文件…', 1, fmtSize(file.size));
+  let src;
+  try { src = await openSource(file, ext); }
+  catch (err) {
+    // 浏览器解码不了的小文件：直接上传原文件交给服务商
+    if (err.undecodable && file.size <= 24 * 1024 * 1024 && CLOUD_DIRECT_EXT.includes(ext)) {
+      jobUI(`正在上传并识别（${fmtSize(file.size)}）…`, 30, '');
+      addSegments(await cloudEngine.request(file, file.name, 0, 0, job));
+      return { duration: null };
+    }
+    throw err;
+  }
+  const D = src.duration;
+  // 段长：尽量让所有段同时在途；只返回整段文字的服务商用 30 秒小段保证时间精度
+  const chunkSec = preset.textOnly ? 30 : Math.min(600, Math.max(60, D / conc));
+  const N = Math.max(1, Math.round(D / chunkSec));
+  const bounds = Array.from({ length: N + 1 }, (_, k) => (k === N ? D : k * D / N));
+  const cpu = limiter(Math.max(2, Math.min(8, navigator.hardwareConcurrency || 4)));
+  const net = limiter(conc);
+  job.stats = { N, done: 0, bytes: 0, D, conc };
+  job.levels = new Array(N);
+  job.netPending = 0;
+
+  const runChunk = async (k) => {
+    for (;;) {
+      if (job.cancel || job.err) return;
+      const prepared = await cpu(async () => {
+        while (job.netPending >= conc + 4 && !job.cancel && !job.err) await sleep(50); // 上传排队过多时暂停解码
+        if (job.cancel || job.err) return null;
+        const piece = await cutPiece(src, bounds, k);
+        job.levels[k] = levelsOf(piece.pcm);
+        if (!piece.pcm.length || rms(piece.pcm) < 0.002) return { silent: true }; // 静音段不上传
+        return { start: piece.start, dur: piece.pcm.length / SR, ...(await encodeForUpload(piece.pcm, job)) };
+      });
+      if (!prepared) return;
+      if (prepared.silent) { job.stats.done++; return; }
+      job.netPending++;
+      job.stats.bytes += prepared.blob.size;
+      try {
+        const segs = await net(() => (job.cancel || job.err) ? [] : cloudEngine.request(prepared.blob, prepared.name, prepared.start, prepared.dur, job));
+        if (!job.cancel) addSegments(segs);
+        job.stats.done++;
+        return;
+      } catch (err) {
+        // 服务商不接受 Opus：此后全部改用 WAV，并重做这一段
+        if (err.formatRejected && prepared.name === 'audio.ogg') { job.forceWav = true; job.stats.bytes -= prepared.blob.size; continue; }
+        job.err = job.err || err;
+        return;
+      } finally { job.netPending--; }
+    }
+  };
+  const report = () => {
+    const st = job.stats, spent = (performance.now() - job.t0) / 1000;
+    jobUI(`极速识别中：已完成 ${st.done}/${st.N} 段 · 已用时 ${fmtDur(spent)}`, 3 + st.done / st.N * 97,
+      `音频 ${fmtDur(st.D)} · 云端并行 ${conc} 路 · 已压缩上传 ${fmtSize(st.bytes)}${job.note ? ' · ' + job.note : ''}`);
+  };
+  const timer = setInterval(report, 250);
+  report();
+  try { await Promise.all(bounds.slice(0, N).map((_, k) => runChunk(k))); }
+  finally { clearInterval(timer); }
+  if (job.err && !job.cancel) throw job.err;
+  return { duration: D };
 }
 
 /* ---- 把连续 PCM 切成识别块：在静音处下刀，避免把一句话切断 ---- */
@@ -1634,26 +1950,56 @@ async function hasWebGPU() {
 }
 
 const cloudEngine = {
-  // 发送一个音频文件（或分片）到云端识别
-  async request(blob, filename, offset, dur, signal) {
+  // 发送一个音频文件（或分片）到云端识别；job 用于取消、限流提示和记住服务商能力
+  async request(blob, filename, offset, dur, job) {
     const base = settings.cloudBase.replace(/\/+$/, '');
-    const send = async (verbose) => {
+    const preset = PRESETS[settings.preset] || PRESETS.custom;
+    const signal = job?.abort?.signal;
+    const send = (verbose) => {
       const fd = new FormData();
       fd.append('file', blob, filename);
       fd.append('model', settings.cloudModel);
       if (settings.lang !== 'auto') fd.append('language', settings.lang);
+      // 提示 Whisper 输出简体中文并加标点
+      if (settings.lang === 'zh' && !preset.textOnly) fd.append('prompt', '以下是普通话的录音转写，使用简体中文，并加上标点符号。');
       if (verbose) fd.append('response_format', 'verbose_json');
       return fetch(base + '/audio/transcriptions', { method: 'POST', headers: { Authorization: 'Bearer ' + settings.cloudKey }, body: fd, signal });
     };
     let res;
-    for (let attempt = 0; attempt < 4; attempt++) {
-      res = await send(true);
-      if (res.status === 400) res = await send(false); // 部分服务商不支持 verbose_json
-      if (res.status !== 429 && res.status < 500) break;
-      await sleep(2000 * 2 ** attempt); // 限流或服务端错误：退避重试
+    for (let attempt = 0; ; attempt++) {
+      try {
+        res = await send(!job?.noVerbose);
+        if (res.status === 400 && !job?.noVerbose) { // 部分服务商不支持 verbose_json
+          const r2 = await send(false);
+          if (r2.ok && job) job.noVerbose = true;
+          res = r2;
+        }
+      } catch (err) {
+        if (signal?.aborted) throw err;
+        if (attempt >= 2) throw new Error('无法连接到识别服务：请检查网络（国内网络通常无法直连 Groq / OpenAI，可改用硅基流动），或该服务不允许网页直接调用');
+        await sleep(1000 * (attempt + 1));
+        continue;
+      }
+      if ((res.status === 429 || res.status >= 500) && attempt < 5) {
+        // 限流或服务端错误：按服务商给的 Retry-After 等待后重试
+        const ra = parseFloat(res.headers.get('retry-after'));
+        const wait = isFinite(ra) ? ra : 2 * 2 ** attempt;
+        if (wait <= 60) {
+          if (job) job.note = res.status === 429 ? `服务商限流，${Math.ceil(wait)} 秒后重试` : '服务商繁忙，正在重试';
+          await sleep(wait * 1000);
+          if (job) job.note = '';
+          continue;
+        }
+      }
+      break;
     }
-    if (res.status === 401 || res.status === 403) throw new Error('API Key 无效或没有权限');
-    if (!res.ok) throw new Error(`云端识别失败（${res.status}）${(await res.text()).slice(0, 160)}`);
+    if (res.status === 401 || res.status === 403) throw new Error('API Key 无效或没有权限，请在「识别设置」中检查');
+    if (res.status === 429) throw new Error('已超出服务商的用量额度（429）。免费档位每小时可识别的音频时长有限，处理长录音请升级付费档位，或稍后再试');
+    if (!res.ok) {
+      const err = new Error(`云端识别失败（${res.status}）${(await res.text()).slice(0, 160)}`);
+      if ((res.status === 400 || res.status === 415) && /\.ogg$/.test(filename)) err.formatRejected = true;
+      throw err;
+    }
     const ct = res.headers.get('content-type') || '';
     const data = ct.includes('json') ? await res.json() : { text: await res.text() };
     if (Array.isArray(data.segments) && data.segments.length) {
@@ -1661,21 +2007,27 @@ const cloudEngine = {
     }
     return splitTimed(data.text, offset, dur || data.duration || 30);
   },
-  transcribe(block, signal) {
-    return this.request(encodeWav([block.pcm], block.pcm.length), 'chunk.wav', block.start, block.pcm.length / SR, signal);
+  // 实时录音的一小段
+  async transcribe(block, job) {
+    const { blob, name } = await encodeForUpload(block.pcm, job);
+    try { return await this.request(blob, name, block.start, block.pcm.length / SR, job); }
+    catch (err) {
+      if (err.formatRejected && job && !job.forceWav) { job.forceWav = true; return this.transcribe(block, job); }
+      throw err;
+    }
   }
 };
 
-function engineLabel() { return settings.engine === 'cloud' ? '云端 API' : '本地识别'; }
+function engineLabel() { return settings.engine === 'cloud' ? '云端极速识别' : '本地识别'; }
 function refreshEngineLabels() {
   $('engineLabel').textContent = engineLabel();
   $('engineHint').textContent = settings.engine === 'cloud'
-    ? `云端 · ${settings.cloudModel || '未配置'}`
+    ? (settings.cloudKey ? `极速 · ${settings.cloudModel}` : '极速识别 · 未填写 API Key')
     : `本地 · Whisper ${settings.localModel.split('-').pop()}`;
 }
 function checkEngine() {
   if (settings.engine === 'cloud' && (!settings.cloudBase || !settings.cloudKey || !settings.cloudModel)) {
-    toast('请先在「识别设置」中填写云端 API 的地址、Key 和模型', 3500);
+    toast('使用极速识别需要先填写 API Key（推荐 Groq，设置里有获取方法）', 4000);
     openSettings();
     return false;
   }
@@ -1735,6 +2087,7 @@ function resetForJob(title) {
   state.summaryStatus = 'pending';
   state.typoMode = false;
   setLang('orig');
+  $('speedInfo').classList.add('hidden');
   $('docTitle').textContent = title;
   $('panelTranscript').scrollTop = 0;
   switchTab('transcript');
@@ -1778,40 +2131,34 @@ async function handleFile(file) {
     const engine = await prepareEngine(job);
     if (job.cancel) throw new Error('已取消');
 
-    // 云端 + 小文件：原文件直接上传，最快
-    if (engine === cloudEngine && file.size <= 24 * 1024 * 1024 && CLOUD_DIRECT_EXT.includes(ext)) {
-      jobUI(`正在上传并识别（${fmtSize(file.size)}）…`, 30, '');
-      const segs = await cloudEngine.request(file, file.name, 0, duration || 0, job.abort.signal);
-      addSegments(segs);
-      jobUI('识别完成', 100, '');
+    if (engine === cloudEngine) {
+      const r = await fastCloudTranscribe(file, ext, job);
+      if (r.duration) duration = r.duration;
+      for (const l of job.levels || []) if (l) levels.push(...l);
     } else {
-      // 分块识别：本地每块约 26 秒，云端每块约 5 分钟并行上传
-      const blockSec = engine === cloudEngine ? 300 : 26;
-      const conc = engine === cloudEngine ? Math.max(1, Math.min(8, +settings.cloudConc || 4)) : 1;
+      // 本地识别：每块约 26 秒，依次送入 Whisper
       const pool = new Set();
       let doneSec = 0, decodedSec = 0, firstErr = null;
       const report = () => {
         const total = duration || decodedSec || 1;
-        const pct = doneSec / total * 100;
         const spent = (performance.now() - job.t0) / 1000;
         const eta = doneSec > 5 ? spent / doneSec * (total - doneSec) : null;
-        const how = engine === cloudEngine ? `云端并行 ${conc} 路` : (job.device === 'webgpu' ? '本地显卡加速' : '本地 CPU');
-        jobUI(`正在识别 ${fmt(doneSec)} / ${duration ? fmt(duration) : '--:--:--'}`, pct,
-          `${how} · ${fmtSize(file.size)}${eta != null ? ' · 预计剩余 ' + fmtDur(eta) : ''}${spent > 3 && doneSec ? ' · 速度 ' + (doneSec / spent).toFixed(1) + ' 倍实时' : ''}`);
+        jobUI(`正在识别 ${fmt(doneSec)} / ${duration ? fmt(duration) : '--:--:--'}`, doneSec / total * 100,
+          `${job.device === 'webgpu' ? '本地显卡加速' : '本地 CPU'} · ${fmtSize(file.size)}${eta != null ? ' · 预计剩余 ' + fmtDur(eta) : ''}${spent > 3 && doneSec ? ' · 速度 ' + (doneSec / spent).toFixed(1) + ' 倍实时' : ''}`);
       };
       report();
-      for await (const block of toBlocks(pcmSource(file, ext), blockSec)) {
+      for await (const block of toBlocks(pcmSource(file, ext), 26)) {
         if (job.cancel || firstErr) break;
         const dur = block.pcm.length / SR;
         decodedSec = block.start + dur;
         levels.push(rms(block.pcm));
         if (rms(block.pcm) < 0.002) { doneSec += dur; report(); continue; } // 静音块直接跳过
-        const p = engine.transcribe(block, job.abort.signal)
+        const p = engine.transcribe(block, job)
           .then(segs => { if (!job.cancel) addSegments(segs); })
           .catch(err => { firstErr = firstErr || err; })
           .finally(() => { pool.delete(p); doneSec += dur; report(); });
         pool.add(p);
-        if (pool.size >= conc) await Promise.race(pool);
+        await Promise.race(pool);
       }
       await Promise.all(pool);
       if (firstErr && !job.cancel) throw firstErr;
@@ -1826,7 +2173,10 @@ async function handleFile(file) {
     buildWaveFromLevels(levels);
     renderTranscript(); updateInfo();
     const spent = (performance.now() - job.t0) / 1000;
-    toast(`转写完成：音频 ${fmtDur(player.duration)}，用时 ${fmtDur(spent)}`, 4000);
+    const speed = `识别用时 ${fmtDur(spent)} · 音频 ${fmtDur(player.duration)} · ${Math.max(1, Math.round(player.duration / spent))} 倍速`;
+    $('speedInfo').textContent = '⚡ ' + speed;
+    $('speedInfo').classList.remove('hidden');
+    toast('转写完成：' + speed, 5000);
     hideJobUI();
     setBusy(false);
     currentJob = null;
@@ -1919,7 +2269,7 @@ function pushRecBlock(rawPcm, sr) {
   rec.queue = rec.queue.then(async () => {
     const pcm = await p;
     try {
-      if (rms(pcm) >= 0.002) addSegments(await rec.engine.transcribe({ start: startSec, pcm }, currentJob?.abort.signal));
+      if (rms(pcm) >= 0.002) addSegments(await rec.engine.transcribe({ start: startSec, pcm }, currentJob));
     } catch (err) { if (!currentJob?.cancel) toast('识别出错：' + err.message, 4000); }
     finally { rec.pendingBlocks--; }
   });
@@ -2138,7 +2488,7 @@ $('settingsSave').onclick = () => {
     engine: document.querySelector('input[name=engine]:checked')?.value || 'local',
     localModel: $('sLocalModel').value, localDevice: $('sLocalDevice').value,
     preset: $('sPreset').value, cloudBase: $('sCloudBase').value.trim(), cloudKey: $('sCloudKey').value.trim(),
-    cloudModel: $('sCloudModel').value.trim(), cloudConc: Math.max(1, Math.min(8, +$('sCloudConc').value || 4)), lang: $('sLang').value,
+    cloudModel: $('sCloudModel').value.trim(), cloudConc: Math.max(1, Math.min(32, +$('sCloudConc').value || 16)), lang: $('sLang').value, v: 2,
     llmOn: $('sLlmOn').checked, llmBase: $('sLlmBase').value.trim(), llmKey: $('sLlmKey').value.trim(), llmModel: $('sLlmModel').value.trim()
   });
   saveSettings();
