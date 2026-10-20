@@ -1,0 +1,2189 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>听语 · 智能语音转文字</title>
+  <!-- TailwindCSS CDN：直接打开即可预览，无需构建 -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    // Tailwind 主题扩展（CDN 未加载成功时跳过，避免报错）
+    if (window.tailwind) tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['-apple-system', 'BlinkMacSystemFont', '"PingFang SC"', '"Microsoft YaHei"', '"Helvetica Neue"', 'Arial', 'sans-serif']
+          }
+        }
+      }
+    };
+  </script>
+  <style>
+    /* ========== 基础 ========== */
+    html, body { height: 100%; }
+    body { -webkit-font-smoothing: antialiased; }
+    .tabular { font-variant-numeric: tabular-nums; }
+
+    /* 细滚动条 */
+    .thin-scroll::-webkit-scrollbar { width: 6px; height: 6px; }
+    .thin-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+    .thin-scroll::-webkit-scrollbar-track { background: transparent; }
+
+    /* ========== 进度条 / 音量条（原生 range 美化） ========== */
+    input[type=range].range {
+      -webkit-appearance: none; appearance: none; width: 100%; height: 4px; border-radius: 2px; cursor: pointer;
+      background: linear-gradient(to right, #2563eb 0%, #2563eb var(--p, 0%), #e2e8f0 var(--p, 0%), #e2e8f0 100%);
+      outline: none;
+    }
+    input[type=range].range::-webkit-slider-thumb {
+      -webkit-appearance: none; width: 12px; height: 12px; border-radius: 50%;
+      background: #fff; border: 2px solid #2563eb; box-shadow: 0 1px 2px rgba(0,0,0,.15);
+    }
+    input[type=range].range::-moz-range-thumb {
+      width: 10px; height: 10px; border-radius: 50%; background: #fff; border: 2px solid #2563eb;
+    }
+
+    /* ========== 搜索高亮 ========== */
+    mark.hl { background: #fde68a; color: inherit; border-radius: 2px; padding: 0 1px; }
+    mark.hl.cur { background: #f59e0b; color: #fff; }
+
+    /* ========== 错别字标记 ========== */
+    .typo { text-decoration: underline wavy #ef4444; text-underline-offset: 4px; cursor: pointer; background: #fef2f2; border-radius: 2px; }
+    .typo:hover { background: #fee2e2; }
+
+    /* ========== Tab 面板平滑过渡 ========== */
+    .tab-panel { transition: opacity .25s ease, transform .25s ease; }
+    .tab-panel.is-hidden { opacity: 0; transform: translateY(6px); pointer-events: none; visibility: hidden; }
+    .tab-panel.is-active { opacity: 1; transform: translateY(0); visibility: visible; }
+    .tab-indicator { transition: left .25s ease, width .25s ease; }
+
+    /* ========== 转写行 ========== */
+    .seg .bubble { transition: box-shadow .2s, background-color .2s; }
+    .seg.active .bubble { box-shadow: 0 0 0 1.5px #3b82f6 inset; }
+    .seg.active .ts { color: #2563eb; font-weight: 500; }
+    .bubble[contenteditable=true] { outline: none; box-shadow: 0 0 0 2px #2563eb inset !important; background: #fff !important; cursor: text; }
+
+    /* ========== loading：三点跳动 / 旋转圈 ========== */
+    .dots span { display: inline-block; width: 6px; height: 6px; margin: 0 2px; border-radius: 50%; background: #3b82f6; animation: dot 1.2s infinite ease-in-out; }
+    .dots span:nth-child(2) { animation-delay: .15s; }
+    .dots span:nth-child(3) { animation-delay: .3s; }
+    @keyframes dot { 0%, 80%, 100% { opacity: .25; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-3px); } }
+    .spinner { width: 28px; height: 28px; border: 3px solid #dbeafe; border-top-color: #2563eb; border-radius: 50%; animation: spin .8s linear infinite; }
+    .spinner-sm { width: 14px; height: 14px; border-width: 2px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .rec-dot { animation: recPulse 1.4s ease-in-out infinite; }
+    @keyframes recPulse { 50% { opacity: .35; } }
+
+    /* 下拉菜单 */
+    .menu { transition: opacity .15s, transform .15s; }
+    .menu.hidden-menu { opacity: 0; transform: translateY(-4px); pointer-events: none; }
+
+    /* 表单控件 */
+    .field { width: 100%; height: 36px; padding: 0 10px; border: 1px solid #e2e8f0; border-radius: 6px; background: #fff; outline: none; }
+    .field:focus { border-color: #60a5fa; }
+  </style>
+</head>
+
+<body class="bg-slate-50 text-slate-800 text-sm lg:overflow-hidden">
+<div class="flex flex-col min-h-full lg:h-full">
+
+  <!-- ==================== 顶部导航 ==================== -->
+  <header class="h-14 shrink-0 bg-white border-b border-slate-200 flex items-center px-4 lg:px-6 gap-4">
+    <div class="flex items-center gap-2 shrink-0">
+      <div class="w-7 h-7 rounded-lg bg-blue-600 flex items-center justify-center">
+        <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" d="M12 3v18M7 8v8M17 8v8M3 11v2M21 11v2"/></svg>
+      </div>
+      <span class="font-semibold text-[15px] text-slate-900">听语</span>
+      <span class="hidden sm:inline text-slate-300">|</span>
+      <span class="hidden sm:inline text-slate-500">智能语音转文字</span>
+    </div>
+    <div class="flex-1 min-w-0 flex items-center gap-3">
+      <div class="min-w-0">
+        <div class="flex items-center gap-2 min-w-0">
+          <span id="docTitle" class="font-medium text-slate-900 truncate">新版本产品发布评审会</span>
+          <span id="demoBadge" class="shrink-0 text-[11px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">示例</span>
+        </div>
+        <div id="docMeta" class="text-xs text-slate-400 truncate tabular"></div>
+      </div>
+    </div>
+    <div class="flex items-center gap-2 sm:gap-3 shrink-0">
+      <span id="statusBadge" class="hidden sm:inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded bg-emerald-50 text-emerald-600">
+        <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>转写完成
+      </span>
+      <button id="btnSettings" class="h-8 px-2.5 rounded-md border border-slate-200 hover:bg-slate-50 text-slate-600 flex items-center gap-1.5" title="识别设置">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M10.3 4.3a1.7 1.7 0 013.4 0 1.7 1.7 0 002.6 1.1 1.7 1.7 0 012.3 2.3 1.7 1.7 0 001.1 2.6 1.7 1.7 0 010 3.4 1.7 1.7 0 00-1.1 2.6 1.7 1.7 0 01-2.3 2.3 1.7 1.7 0 00-2.6 1.1 1.7 1.7 0 01-3.4 0 1.7 1.7 0 00-2.6-1.1 1.7 1.7 0 01-2.3-2.3 1.7 1.7 0 00-1.1-2.6 1.7 1.7 0 010-3.4 1.7 1.7 0 001.1-2.6 1.7 1.7 0 012.3-2.3 1.7 1.7 0 002.6-1.1z"/><circle cx="12" cy="12" r="3"/></svg>
+        <span id="engineLabel" class="hidden sm:inline">本地识别</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- ==================== 主体：左右分栏 ==================== -->
+  <main class="flex-1 min-h-0 flex flex-col lg:flex-row gap-4 p-3 sm:p-4">
+
+    <!-- ========== 左栏：媒体播放器模块 ========== -->
+    <aside class="w-full lg:w-[380px] shrink-0 flex flex-col gap-4 lg:overflow-y-auto thin-scroll">
+
+      <!-- 新建转写：录音 / 上传 -->
+      <section id="newCard" class="bg-white rounded-xl border border-slate-200 p-4">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="font-medium text-slate-900">新建转写</h2>
+          <span id="engineHint" class="text-xs text-slate-400"></span>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <!-- 入口①：麦克风实时录音 -->
+          <button id="btnRecord" class="group flex flex-col items-center justify-center gap-1.5 h-20 rounded-lg border border-slate-200 hover:border-blue-400 hover:bg-blue-50/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+            <span class="w-8 h-8 rounded-full bg-blue-600 text-white flex items-center justify-center">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path stroke-linecap="round" d="M5 11a7 7 0 0014 0M12 18v3"/></svg>
+            </span>
+            <span class="text-slate-700">实时录音</span>
+          </button>
+          <!-- 入口②：上传本地音视频 -->
+          <button id="btnUpload" class="group flex flex-col items-center justify-center gap-1.5 h-20 rounded-lg border border-dashed border-slate-300 hover:border-blue-400 hover:bg-blue-50/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+            <span class="w-8 h-8 rounded-full bg-blue-50 text-blue-600 flex items-center justify-center">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 16V4m0 0l-4 4m4-4l4 4M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2"/></svg>
+            </span>
+            <span class="text-slate-700">上传音视频</span>
+          </button>
+          <input id="fileInput" type="file" class="hidden" accept="audio/*,video/*,.mp3,.wav,.m4a,.aac,.flac,.ogg,.opus,.wma,.amr,.ape,.aiff,.mp4,.mov,.mkv,.webm,.avi,.wmv,.flv,.3gp,.m4v" />
+        </div>
+        <p class="mt-2.5 text-xs text-slate-400 leading-5">支持 MP3、WAV、M4A、AAC、FLAC、OGG、OPUS 等音频，MP4、MOV、MKV、WEBM 等视频；MP3 / WAV 支持数小时的大文件，可直接拖拽到此区域</p>
+
+        <!-- 录音中状态条（默认隐藏） -->
+        <div id="recPanel" class="hidden mt-3 rounded-lg bg-red-50 border border-red-100 px-3 py-2.5 flex items-center gap-3">
+          <span class="w-2.5 h-2.5 rounded-full bg-red-500 rec-dot"></span>
+          <div class="flex-1">
+            <div class="text-red-600 font-medium">正在录音并实时转写</div>
+            <div id="recTime" class="text-xs text-red-400 tabular">00:00:00</div>
+          </div>
+          <button id="btnStopRec" class="px-3 h-8 rounded-md bg-red-500 hover:bg-red-600 text-white text-xs">结束录音</button>
+        </div>
+      </section>
+
+      <!-- 播放器 -->
+      <section class="bg-white rounded-xl border border-slate-200 p-4">
+        <!-- 视频画面（上传视频时显示） -->
+        <video id="media" class="hidden w-full rounded-lg bg-black mb-3 max-h-56" playsinline preload="metadata"></video>
+        <!-- 音频波形（示意，点击可跳转） -->
+        <div id="waveWrap" class="mb-3 rounded-lg bg-slate-50 px-3 py-4">
+          <div id="wave" class="h-14 flex items-center gap-[2px] cursor-pointer"></div>
+        </div>
+
+        <!-- 进度条 -->
+        <input id="progress" type="range" class="range" min="0" max="1000" value="0" step="1" aria-label="播放进度" />
+        <div class="flex justify-between text-xs text-slate-400 mt-1.5 tabular">
+          <span id="curTime">00:00:00</span><span id="durTime">00:00:00</span>
+        </div>
+
+        <!-- 控制按钮 -->
+        <div class="mt-3 flex items-center gap-2">
+          <button id="btnBack" title="后退 15 秒" class="w-8 h-8 rounded-md text-slate-500 hover:bg-slate-100 flex items-center justify-center">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M11 17l-5-5 5-5M18 17l-5-5 5-5"/></svg>
+          </button>
+          <button id="btnPlay" title="播放 / 暂停（空格）" class="w-10 h-10 rounded-full bg-blue-600 hover:bg-blue-700 text-white flex items-center justify-center">
+            <svg id="icPlay" class="w-4 h-4 ml-0.5" fill="currentColor" viewBox="0 0 24 24"><path d="M7 4.5v15l13-7.5z"/></svg>
+            <svg id="icPause" class="w-4 h-4 hidden" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="4.5" width="4" height="15" rx="1"/><rect x="14" y="4.5" width="4" height="15" rx="1"/></svg>
+          </button>
+          <button id="btnFwd" title="前进 15 秒" class="w-8 h-8 rounded-md text-slate-500 hover:bg-slate-100 flex items-center justify-center">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 17l5-5-5-5M6 17l5-5-5-5"/></svg>
+          </button>
+          <select id="rate" title="播放倍速" class="h-8 ml-1 px-1.5 rounded-md border border-slate-200 text-xs text-slate-600 bg-white focus:outline-none focus:border-blue-400">
+            <option value="0.75">0.75x</option><option value="1" selected>1.0x</option><option value="1.25">1.25x</option><option value="1.5">1.5x</option><option value="2">2.0x</option>
+          </select>
+          <!-- 音量 -->
+          <div class="ml-auto flex items-center gap-2 w-28">
+            <button id="btnMute" title="静音" class="w-7 h-7 shrink-0 rounded-md text-slate-500 hover:bg-slate-100 flex items-center justify-center">
+              <svg id="icVol" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linejoin="round" d="M4 9h4l5-4v14l-5-4H4z"/><path stroke-linecap="round" d="M16.5 8.5a5 5 0 010 7"/></svg>
+              <svg id="icMute" class="w-4 h-4 hidden" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linejoin="round" d="M4 9h4l5-4v14l-5-4H4z"/><path stroke-linecap="round" d="M17 9l5 6M22 9l-5 6"/></svg>
+            </button>
+            <input id="volume" type="range" class="range" min="0" max="100" value="80" aria-label="音量" />
+          </div>
+        </div>
+      </section>
+
+      <!-- 文件信息 / 发言人统计 -->
+      <section class="bg-white rounded-xl border border-slate-200 p-4">
+        <h2 class="font-medium text-slate-900 mb-3">文件信息</h2>
+        <dl class="grid grid-cols-3 gap-2 text-center mb-4">
+          <div class="rounded-lg bg-slate-50 py-2"><dt class="text-xs text-slate-400">时长</dt><dd id="infoDur" class="mt-0.5 font-medium tabular">00:00</dd></div>
+          <div class="rounded-lg bg-slate-50 py-2"><dt class="text-xs text-slate-400">字数</dt><dd id="infoWords" class="mt-0.5 font-medium tabular">0</dd></div>
+          <div class="rounded-lg bg-slate-50 py-2"><dt class="text-xs text-slate-400">段落</dt><dd id="infoSegs" class="mt-0.5 font-medium tabular">0</dd></div>
+        </dl>
+        <div class="flex items-center justify-between text-xs text-slate-400 mb-2">
+          <span>发言人占比</span><span>点击文字记录中的发言人可修改</span>
+        </div>
+        <div id="speakerStats" class="space-y-2.5"></div>
+      </section>
+    </aside>
+
+    <!-- ========== 右栏：文字记录 / 智能纪要 ========== -->
+    <section class="flex-1 min-w-0 min-h-[600px] lg:min-h-0 bg-white rounded-xl border border-slate-200 flex flex-col">
+
+      <!-- Tab 栏 -->
+      <div class="relative flex items-center gap-6 px-5 border-b border-slate-200 shrink-0">
+        <button class="tab-btn py-3.5 font-medium text-blue-600" data-tab="transcript">文字记录</button>
+        <button class="tab-btn py-3.5 font-medium text-slate-500 hover:text-slate-800" data-tab="summary">智能纪要</button>
+        <span id="tabIndicator" class="tab-indicator absolute bottom-0 h-0.5 bg-blue-600 rounded-full"></span>
+      </div>
+
+      <!-- 顶部工具栏：搜索、翻译、纠错、导出 -->
+      <div class="flex flex-wrap items-center gap-2 px-4 sm:px-5 py-3 border-b border-slate-100 shrink-0">
+        <!-- 搜索 -->
+        <div class="relative flex-1 min-w-[180px] max-w-sm">
+          <svg class="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path stroke-linecap="round" d="M20 20l-3.5-3.5"/></svg>
+          <input id="search" type="text" placeholder="搜索关键词，回车跳转下一个" class="w-full h-8 pl-8 pr-24 rounded-md border border-slate-200 bg-slate-50 focus:bg-white focus:border-blue-400 focus:outline-none placeholder:text-slate-400" />
+          <div class="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-0.5">
+            <span id="searchCount" class="text-xs text-slate-400 tabular mr-1"></span>
+            <button id="searchPrev" title="上一个" class="w-6 h-6 rounded text-slate-400 hover:bg-slate-200 hover:text-slate-600 flex items-center justify-center">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 15l6-6 6 6"/></svg>
+            </button>
+            <button id="searchNext" title="下一个" class="w-6 h-6 rounded text-slate-400 hover:bg-slate-200 hover:text-slate-600 flex items-center justify-center">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 9l6 6 6-6"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-2 ml-auto">
+          <!-- 翻译下拉 -->
+          <div class="relative" data-dropdown>
+            <button id="btnLang" class="h-8 px-3 rounded-md border border-slate-200 hover:bg-slate-50 flex items-center gap-1.5 text-slate-600" data-toggle>
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 5h12M9 3v2m1.05 9.5A18 18 0 016.4 9m6.1 9h7M11 21l5-10 5 10M12.75 5C11.8 10.8 8.1 15.6 3 18"/></svg>
+              <span id="langLabel">原文</span>
+              <svg class="w-3 h-3 text-slate-400" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" d="M6 9l6 6 6-6"/></svg>
+            </button>
+            <div class="menu hidden-menu absolute right-0 top-9 z-30 w-40 rounded-lg border border-slate-200 bg-white shadow-lg py-1" data-menu>
+              <button class="lang-opt w-full text-left px-3 py-2 hover:bg-slate-50 flex justify-between" data-lang="orig">原文<span class="chk text-blue-600">✓</span></button>
+              <button class="lang-opt w-full text-left px-3 py-2 hover:bg-slate-50 flex justify-between" data-lang="en">翻译为英文<span class="chk text-blue-600 hidden">✓</span></button>
+              <button class="lang-opt w-full text-left px-3 py-2 hover:bg-slate-50 flex justify-between" data-lang="both">中英对照<span class="chk text-blue-600 hidden">✓</span></button>
+            </div>
+          </div>
+
+          <!-- 智能纠错 -->
+          <button id="btnTypo" class="h-8 px-3 rounded-md border border-slate-200 hover:bg-slate-50 flex items-center gap-1.5 text-slate-600">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 7V5h12v2M10 5v12m-3 0h6M15 15l2 2 4-4"/></svg>
+            <span>智能纠错</span>
+            <span id="typoBadge" class="hidden min-w-[18px] h-[18px] px-1 rounded-full bg-red-500 text-white text-[11px] leading-[18px] text-center"></span>
+          </button>
+
+          <!-- 导出 -->
+          <div class="relative" data-dropdown>
+            <button class="h-8 px-3 rounded-md bg-blue-600 hover:bg-blue-700 text-white flex items-center gap-1.5" data-toggle>
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v12m0 0l-4-4m4 4l4-4M4 18v1a1 1 0 001 1h14a1 1 0 001-1v-1"/></svg>
+              导出
+            </button>
+            <div class="menu hidden-menu absolute right-0 top-9 z-30 w-56 rounded-lg border border-slate-200 bg-white shadow-lg py-1" data-menu>
+              <button id="exportTxt" class="w-full text-left px-3 py-2 hover:bg-slate-50 flex items-center gap-2">
+                <span class="w-9 text-center text-[10px] font-semibold rounded bg-slate-100 text-slate-500 py-0.5">TXT</span>导出 TXT 文本
+              </button>
+              <button id="exportSrt" class="w-full text-left px-3 py-2 hover:bg-slate-50 flex items-center gap-2">
+                <span class="w-9 text-center text-[10px] font-semibold rounded bg-blue-50 text-blue-600 py-0.5">SRT</span>导出 SRT 字幕
+              </button>
+              <button id="exportSummary" class="w-full text-left px-3 py-2 hover:bg-slate-50 flex items-center gap-2">
+                <span class="w-9 text-center text-[10px] font-semibold rounded bg-emerald-50 text-emerald-600 py-0.5">纪要</span>导出智能纪要
+              </button>
+              <div class="my-1 border-t border-slate-100"></div>
+              <label class="flex items-center gap-2 px-3 py-2 hover:bg-slate-50 cursor-pointer select-none">
+                <input id="optTime" type="checkbox" checked class="w-4 h-4 accent-blue-600" />包含时间戳
+              </label>
+              <label class="flex items-center gap-2 px-3 py-2 hover:bg-slate-50 cursor-pointer select-none">
+                <input id="optSpeaker" type="checkbox" checked class="w-4 h-4 accent-blue-600" />包含发言人
+              </label>
+              <p class="px-3 pb-1.5 text-[11px] text-slate-400 leading-4">SRT 字幕自带时间轴；导出内容跟随当前翻译模式</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 面板容器 -->
+      <div id="panels" class="relative flex-1 min-h-0">
+
+        <!-- 面板1：文字记录 -->
+        <div id="panelTranscript" class="tab-panel is-active absolute inset-0 overflow-y-auto thin-scroll">
+          <!-- 转写任务进度条（识别过程中显示） -->
+          <div id="jobBar" class="hidden sticky top-0 z-10 mx-4 sm:mx-5 mt-3 rounded-lg bg-blue-50 border border-blue-100 px-3 py-2.5">
+            <div class="flex items-center gap-2">
+              <div class="spinner spinner-sm shrink-0"></div>
+              <span id="jobText" class="flex-1 min-w-0 truncate text-blue-700"></span>
+              <button id="jobCancel" class="shrink-0 h-7 px-2.5 rounded-md text-blue-600 hover:bg-blue-100 text-xs">取消</button>
+            </div>
+            <div class="mt-2 h-1 rounded-full bg-blue-100 overflow-hidden"><div id="jobBarFill" class="h-full bg-blue-600 transition-all duration-300" style="width:0%"></div></div>
+            <div id="jobSub" class="mt-1.5 text-xs text-blue-500 tabular"></div>
+          </div>
+          <!-- 纠错提示条 -->
+          <div id="typoBar" class="hidden sticky top-0 z-10 mx-4 sm:mx-5 mt-3 rounded-lg bg-red-50 border border-red-100 px-3 py-2 flex items-center gap-2 text-red-600">
+            <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path stroke-linecap="round" d="M12 8v5m0 3v.01"/></svg>
+            <span id="typoBarText" class="flex-1 text-xs sm:text-sm"></span>
+            <button id="typoFixAll" class="shrink-0 h-7 px-2.5 rounded-md bg-red-500 hover:bg-red-600 text-white text-xs">全部修正</button>
+            <button id="typoClose" class="shrink-0 h-7 px-2 rounded-md text-red-400 hover:bg-red-100 text-xs">关闭</button>
+          </div>
+          <div id="transcriptList" class="px-3 sm:px-4 py-3 space-y-1"></div>
+          <!-- 实时录音时的“识别中”行 -->
+          <div id="liveRow" class="hidden px-6 pb-6 flex items-center gap-2 text-slate-400 text-xs">
+            <span class="dots"><span></span><span></span><span></span></span><span id="liveText">正在聆听并识别…</span>
+          </div>
+        </div>
+
+        <!-- 面板2：智能纪要 -->
+        <div id="panelSummary" class="tab-panel is-hidden absolute inset-0 overflow-y-auto thin-scroll">
+          <div id="summaryBody" class="max-w-3xl px-5 sm:px-8 py-6"></div>
+        </div>
+
+        <!-- 通用 loading 遮罩（翻译、生成纪要等） -->
+        <div id="loading" class="hidden absolute inset-0 z-20 bg-white/90 flex flex-col items-center justify-center gap-3">
+          <div class="spinner"></div>
+          <div id="loadingText" class="text-slate-700 font-medium">处理中…</div>
+          <div id="loadingSub" class="text-xs text-slate-400"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- ==================== 识别设置弹窗 ==================== -->
+<div id="settingsModal" class="hidden fixed inset-0 z-40 bg-slate-900/30 flex items-start sm:items-center justify-center p-3 overflow-y-auto">
+  <div class="w-full max-w-xl bg-white rounded-xl shadow-xl border border-slate-200">
+    <div class="flex items-center justify-between px-5 py-4 border-b border-slate-100">
+      <h3 class="font-semibold text-slate-900 text-[15px]">识别设置</h3>
+      <button id="settingsClose" class="w-8 h-8 rounded-md text-slate-400 hover:bg-slate-100 flex items-center justify-center">✕</button>
+    </div>
+    <div class="px-5 py-4 space-y-5 max-h-[75vh] overflow-y-auto thin-scroll">
+      <!-- 识别方式 -->
+      <div>
+        <div class="text-slate-500 text-xs mb-2">识别方式</div>
+        <div class="grid grid-cols-2 gap-3">
+          <label class="engine-card cursor-pointer rounded-lg border p-3" data-engine="local">
+            <input type="radio" name="engine" value="local" class="hidden" />
+            <div class="font-medium text-slate-900">本地识别</div>
+            <div class="mt-1 text-xs text-slate-500 leading-5">浏览器内运行 Whisper 模型，免费，音频不出本机。首次需下载模型，速度取决于电脑性能。</div>
+          </label>
+          <label class="engine-card cursor-pointer rounded-lg border p-3" data-engine="cloud">
+            <input type="radio" name="engine" value="cloud" class="hidden" />
+            <div class="font-medium text-slate-900">云端 API</div>
+            <div class="mt-1 text-xs text-slate-500 leading-5">使用你自己的语音识别 API Key，分片并行识别，数小时的录音几分钟内完成，按服务商价格计费。</div>
+          </label>
+        </div>
+      </div>
+
+      <!-- 本地识别设置 -->
+      <div id="localBox" class="space-y-3">
+        <div class="grid grid-cols-2 gap-3">
+          <label class="block"><span class="text-xs text-slate-500">模型</span>
+            <select id="sLocalModel" class="field mt-1">
+              <option value="onnx-community/whisper-tiny">Tiny（约 40MB，最快）</option>
+              <option value="onnx-community/whisper-base">Base（约 80MB，均衡）</option>
+              <option value="onnx-community/whisper-small">Small（约 250MB，更准）</option>
+            </select>
+          </label>
+          <label class="block"><span class="text-xs text-slate-500">运行设备</span>
+            <select id="sLocalDevice" class="field mt-1">
+              <option value="auto">自动（优先使用显卡 WebGPU）</option>
+              <option value="wasm">仅 CPU</option>
+            </select>
+          </label>
+        </div>
+        <p id="gpuHint" class="text-xs text-slate-400"></p>
+      </div>
+
+      <!-- 云端识别设置 -->
+      <div id="cloudBox" class="space-y-3">
+        <div class="grid grid-cols-2 gap-3">
+          <label class="block"><span class="text-xs text-slate-500">服务商（OpenAI 兼容接口）</span>
+            <select id="sPreset" class="field mt-1">
+              <option value="groq">Groq（最快）</option>
+              <option value="openai">OpenAI</option>
+              <option value="siliconflow">硅基流动（国内可用）</option>
+              <option value="custom">自定义</option>
+            </select>
+          </label>
+          <label class="block"><span class="text-xs text-slate-500">识别模型</span>
+            <input id="sCloudModel" class="field mt-1" />
+          </label>
+        </div>
+        <label class="block"><span class="text-xs text-slate-500">接口地址</span>
+          <input id="sCloudBase" class="field mt-1" placeholder="https://api.example.com/v1" />
+        </label>
+        <label class="block"><span class="text-xs text-slate-500">API Key</span>
+          <input id="sCloudKey" type="password" class="field mt-1" placeholder="sk-..." autocomplete="off" />
+        </label>
+        <label class="block w-40"><span class="text-xs text-slate-500">并行分片数</span>
+          <input id="sCloudConc" type="number" min="1" max="8" class="field mt-1" />
+        </label>
+      </div>
+
+      <!-- 识别语言 -->
+      <label class="block w-48"><span class="text-xs text-slate-500">识别语言</span>
+        <select id="sLang" class="field mt-1">
+          <option value="zh">中文</option><option value="en">英文</option><option value="ja">日语</option><option value="ko">韩语</option><option value="auto">自动检测</option>
+        </select>
+      </label>
+
+      <!-- 大模型（纪要 / 翻译 / 纠错） -->
+      <div class="rounded-lg border border-slate-200 p-3 space-y-3">
+        <label class="flex items-center gap-2 cursor-pointer select-none">
+          <input id="sLlmOn" type="checkbox" class="w-4 h-4 accent-blue-600" />
+          <span class="font-medium text-slate-800">使用大模型生成纪要、翻译和纠错</span>
+        </label>
+        <p class="text-xs text-slate-400 leading-5">不开启时，纪要由本地规则提取（较简单），翻译不可用，纠错只检查常见错别字。</p>
+        <div id="llmBox" class="space-y-3">
+          <div class="grid grid-cols-2 gap-3">
+            <label class="block"><span class="text-xs text-slate-500">接口地址</span><input id="sLlmBase" class="field mt-1" /></label>
+            <label class="block"><span class="text-xs text-slate-500">模型</span><input id="sLlmModel" class="field mt-1" /></label>
+          </div>
+          <label class="block"><span class="text-xs text-slate-500">API Key</span><input id="sLlmKey" type="password" class="field mt-1" autocomplete="off" /></label>
+          <button id="sLlmCopy" class="text-xs text-blue-600 hover:underline">与云端识别使用同一服务商和 Key</button>
+        </div>
+      </div>
+      <p class="text-xs text-slate-400 leading-5">API Key 只保存在当前浏览器里，识别时由浏览器直接发送给你选择的服务商，不经过任何中间服务器。</p>
+    </div>
+    <div class="flex justify-end gap-2 px-5 py-3 border-t border-slate-100">
+      <button id="settingsCancel" class="h-9 px-4 rounded-md border border-slate-200 hover:bg-slate-50">取消</button>
+      <button id="settingsSave" class="h-9 px-4 rounded-md bg-blue-600 hover:bg-blue-700 text-white">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 发言人修改浮层 -->
+<div id="spkMenu" class="hidden fixed z-40 w-48 rounded-lg border border-slate-200 bg-white shadow-lg py-1"></div>
+
+<!-- 轻提示 -->
+<div id="toast" class="fixed left-1/2 top-16 -translate-x-1/2 z-50 max-w-[90vw] px-4 py-2 rounded-lg bg-slate-800 text-white text-sm shadow-lg opacity-0 pointer-events-none transition-opacity duration-200"></div>
+
+<script>
+/* =====================================================================
+ * 一、示例数据：页面打开时展示的样例会议（带英文翻译）
+ *    样例中故意保留了几处错别字，用于演示“智能纠错”
+ * ===================================================================== */
+const DEMO_SPEAKERS = { wang: { name: '王经理', color: 0 }, li: { name: '李工', color: 1 }, chen: { name: '陈设计', color: 2 } };
+const DEMO_DURATION = 242;
+const SCRIPT = [
+  { spk: 'wang', start: 0,   text: '好，大家都到齐了，我们开始今天的会议。今天主要讨论新版本的发布计划和几个遗留问题。', en: "OK, everyone is here, let's start today's meeting. We will mainly discuss the release plan for the new version and a few outstanding issues." },
+  { spk: 'li',   start: 9,   text: '我先同步一下研发进度。目前核心功能已经全部开发完成，测试覆盖率达到了百分之八十五。', en: 'Let me share the development progress first. All core features are done, and test coverage has reached 85%.' },
+  { spk: 'li',   start: 19,  text: '不过实时转写模块在弱网环境下还有一些延迟，我们正在做优化，预计下周三能解决。', en: 'However, the real-time transcription module still has some latency on weak networks. We are optimizing it and expect a fix by next Wednesday.' },
+  { spk: 'wang', start: 30,  text: '弱网的问题用户反馈比较多，这个一定要优先处理。既使发布时间往后推两天也可以接受。', en: 'Users have reported the weak-network issue a lot, so it must be prioritized. Even pushing the release back two days is acceptable.' },
+  { spk: 'chen', start: 41,  text: '设计这边，新版的交互稿已经全部交付了。我们这次重点优化了文字记录页面的阅读体验。', en: 'On the design side, all interaction specs for the new version have been delivered. This time we focused on the reading experience of the transcript page.' },
+  { spk: 'chen', start: 52,  text: '比如不同发言人用不同的背景色区分，点击任意一句话就能跳转到对应的音频位置。', en: 'For example, different speakers have different background colors, and clicking any sentence jumps to the matching audio position.' },
+  { spk: 'wang', start: 63,  text: '这个功能很实用。智能纪要那部份的进展怎么样？', en: 'That is very practical. How is the smart summary part going?' },
+  { spk: 'li',   start: 71,  text: '智能纪要已经接入了新的摘要模型，可以自动生成内容总结、章节要点和待办事项。', en: 'The smart summary now uses the new summarization model and can automatically generate an overview, chapter highlights and action items.' },
+  { spk: 'li',   start: 82,  text: '准确率方面，我们用一百场真实会议做了评测，用户满意度大概在百分之九十左右。', en: 'For accuracy, we evaluated it on 100 real meetings, and user satisfaction is around 90%.' },
+  { spk: 'chen', start: 93,  text: '我补充一点，待办事项支持直接勾选完成，后续还会和日程系统打通。', en: 'One more point: action items can be checked off directly, and we will integrate them with the calendar system later.' },
+  { spk: 'wang', start: 102, text: '很好。那发布前的宣传物料谁来负责？需要提前按排一下。', en: 'Great. Who is responsible for the pre-launch marketing materials? We need to arrange that in advance.' },
+  { spk: 'chen', start: 111, text: '宣传物料我来负责，包括产品截图、功能介绍视频和官网的更新。', en: 'I will take care of the marketing materials, including product screenshots, the feature video and the website update.' },
+  { spk: 'wang', start: 120, text: '好的，时间上要和研发的节奏对齐。李工，测试环境什么时候能给到市场同事体验？', en: 'OK, the timing needs to align with development. Li, when can the marketing team try out the test environment?' },
+  { spk: 'li',   start: 130, text: '本周五之前可以部署好预发布环境，到时候我把帐号统一发到群里。', en: 'The staging environment will be deployed before this Friday, and I will share the accounts in the group chat.' },
+  { spk: 'wang', start: 139, text: '另外，上次客户提到的导出字幕功能，现在支持哪些格式？', en: 'Also, which formats does the subtitle export feature that the client mentioned last time support now?' },
+  { spk: 'li',   start: 147, text: '目前支持导出 TXT 文本和 SRT 字幕，可以选择是否包含时间戳和发言人信息。', en: 'It currently supports TXT text and SRT subtitles, with options to include timestamps and speaker names.' },
+  { spk: 'chen', start: 157, text: '多语言翻译也做好了，英文翻译的效果不错，后续会再增加日语和韩语。', en: 'Multilingual translation is ready too. English translation works well, and Japanese and Korean will be added later.' },
+  { spk: 'wang', start: 167, text: '那我们把发布时间暂定在下个月十五号，大家有没有异议？', en: "Then let's tentatively set the release for the 15th of next month. Any objections?" },
+  { spk: 'li',   start: 175, text: '研发这边没问题，但我建议在发布前一周在次确认一下性能指标。', en: 'No problem from development, but I suggest we double-check the performance metrics one week before release.' },
+  { spk: 'chen', start: 185, text: '设计这边也没问题。', en: 'No problem from design either.' },
+  { spk: 'wang', start: 189, text: '好，那我总结一下今天的会议。第一，弱网延迟问题由李工负责，下周三前解决。', en: "OK, let me summarize today's meeting. First, Li owns the weak-network latency issue and will fix it by next Wednesday." },
+  { spk: 'wang', start: 200, text: '第二，宣传物料由陈设计负责，月底前完成初稿。第三，周五前部署预发布环境。', en: 'Second, Chen owns the marketing materials, with a first draft by the end of the month. Third, deploy the staging environment before Friday.' },
+  { spk: 'wang', start: 211, text: '最后，发布前一周召开性能评审会，大家务必准时参加。', en: 'Finally, we will hold a performance review one week before release. Please be on time.' },
+  { spk: 'li',   start: 220, text: '收到。我会后把详细的排期表发出来，有问题随时沟通。', en: "Got it. I will send out the detailed schedule after the meeting. Let's keep in touch if anything comes up." },
+  { spk: 'chen', start: 229, text: '好的，没有其他问题的话就先这样。', en: "OK, if there's nothing else, that's it for now." },
+  { spk: 'wang', start: 234, text: '嗯，辛苦大家，今天的会就开到这里，散会。', en: "Thanks everyone, that's all for today. Meeting adjourned." }
+];
+const DEMO_SUMMARY = {
+  overview: '本次会议围绕新版本发布计划展开评审。研发核心功能已全部完成，测试覆盖率达 85%，仅剩实时转写在弱网环境下的延迟问题待优化；设计侧交互稿已全部交付，重点提升了文字记录页的阅读体验；智能纪要接入新摘要模型，百场会议评测满意度约 90%；导出（TXT/SRT）与英文翻译能力已就绪。会议确定发布时间暂定为下月 15 日，并明确了弱网优化、宣传物料、预发布环境与性能评审等后续分工。',
+  overviewEn: 'The meeting reviewed the release plan for the new version. Core development is complete with 85% test coverage; only real-time transcription latency on weak networks remains. Design specs are fully delivered, focusing on transcript readability. The smart summary uses a new model with ~90% satisfaction across 100 meetings. TXT/SRT export and English translation are ready. The release is tentatively set for the 15th of next month, with owners assigned for network optimization, marketing materials, staging and a performance review.',
+  chapters: [
+    { seg: 0,  title: '会议开场', en: 'Opening', points: ['明确本次议题：新版本发布计划与遗留问题'] },
+    { seg: 1,  title: '研发进度与弱网优化', en: 'Development progress & weak-network optimization', points: ['核心功能全部完成，测试覆盖率 85%', '实时转写弱网延迟需优先处理，可接受发布延后两天'] },
+    { seg: 4,  title: '设计交付与阅读体验', en: 'Design delivery & reading experience', points: ['交互稿已全部交付', '发言人分色、点击文字跳转音频位置'] },
+    { seg: 6,  title: '智能纪要能力', en: 'Smart summary capability', points: ['接入新摘要模型，支持总结、章节、待办', '百场真实会议评测满意度约 90%', '待办可勾选，后续打通日程系统'] },
+    { seg: 10, title: '宣传物料与预发布环境', en: 'Marketing materials & staging', points: ['宣传物料由陈设计负责', '本周五前部署预发布环境并发放账号'] },
+    { seg: 14, title: '导出与多语言', en: 'Export & multilingual', points: ['支持导出 TXT / SRT，可选时间戳与发言人', '英文翻译已上线，后续增加日语、韩语'] },
+    { seg: 17, title: '发布时间确认', en: 'Release date', points: ['发布时间暂定下月 15 日', '发布前一周再次确认性能指标'] },
+    { seg: 20, title: '会议总结', en: 'Wrap-up', points: ['复述三项分工与性能评审安排'] }
+  ],
+  todos: [
+    { text: '优化实时转写在弱网环境下的延迟问题', en: 'Fix real-time transcription latency on weak networks', owner: '李工', due: '下周三' },
+    { text: '完成宣传物料初稿（截图、介绍视频、官网更新）', en: 'Finish first draft of marketing materials', owner: '陈设计', due: '月底前' },
+    { text: '部署预发布环境，并将体验账号发到群里', en: 'Deploy staging and share test accounts', owner: '李工', due: '本周五' },
+    { text: '组织发布前性能评审会', en: 'Hold the pre-release performance review', owner: '王经理', due: '发布前一周' },
+    { text: '会后发出详细排期表', en: 'Send the detailed schedule after the meeting', owner: '李工', due: '今日' }
+  ]
+};
+
+/* 发言人配色（按顺序分配） */
+const PALETTE = [
+  { avatar: 'bg-blue-500',    bubble: 'bg-blue-50',    bar: 'bg-blue-500' },
+  { avatar: 'bg-amber-500',   bubble: 'bg-amber-50',   bar: 'bg-amber-500' },
+  { avatar: 'bg-emerald-500', bubble: 'bg-emerald-50', bar: 'bg-emerald-500' },
+  { avatar: 'bg-violet-500',  bubble: 'bg-violet-50',  bar: 'bg-violet-500' },
+  { avatar: 'bg-rose-500',    bubble: 'bg-rose-50',    bar: 'bg-rose-500' },
+  { avatar: 'bg-cyan-500',    bubble: 'bg-cyan-50',    bar: 'bg-cyan-500' }
+];
+
+/* 常见错别字词典：错误写法 → 正确写法（未配置大模型时使用） */
+const TYPO_DICT = {
+  '既使': '即使', '部份': '部分', '按排': '安排', '帐号': '账号', '帐户': '账户', '帐单': '账单', '在次': '再次',
+  '再接再励': '再接再厉', '迫不急待': '迫不及待', '一股作气': '一鼓作气', '甘败下风': '甘拜下风', '默守成规': '墨守成规',
+  '谈笑风声': '谈笑风生', '走头无路': '走投无路', '再所难免': '在所难免', '按装': '安装', '布署': '部署', '必竟': '毕竟',
+  '即然': '既然', '凑和': '凑合', '一愁莫展': '一筹莫展', '穿流不息': '川流不息', '震憾': '震撼', '松驰': '松弛',
+  '渡假': '度假', '气慨': '气概', '寒喧': '寒暄', '脉博': '脉搏', '竟赛': '竞赛', '重迭': '重叠', '一如继往': '一如既往',
+  '不径而走': '不胫而走', '消声匿迹': '销声匿迹', '拔打': '拨打', '签定合同': '签订合同', '经费拔款': '经费拨款'
+};
+
+/* 繁体 → 简体（常用字，Whisper 偶尔会输出繁体） */
+const T2S = (() => {
+  const s = '這这個个們们來来會会說说時时為为對对國国學学後后開开關关還还過过經经發发現现實实業业點点問问題题長长與与種种東东見见頭头進进動动員员機机電电產产樣样從从間间聽听讓让認认識识號号錯错誤误語语話话請请謝谢讀读寫写記记錄录轉转換换譯译議议論论計计劃划專专項项標标準准據据數数處处統统網网絡络線线給给結结參参備备確确價价錢钱買买賣卖單单總总體体應应該该嗎吗麼么覺觉歡欢樂乐愛爱夠够幾几萬万億亿區区縣县範范圍围環环響响聲声調调節节級级紅红綠绿藍蓝黃黄顏颜書书圖图畫画視视頻频聞闻報报紙纸車车門门鐘钟鬧闹熱热氣气風风雲云雖虽雙双邊边際际隊队陽阳陰阴雜杂難难離离靜静預预領领顯显願愿類类飛飞飯饭館馆馬马驗验髮发鬥斗魚鱼鳥鸟麥麦黨党齊齐龍龙傳传傷伤優优兒儿內内兩两冊册決决況况劑剂勞劳勢势務务勵励協协卻却歷历厲厉壓压嚴严團团園园場场塊块壞坏壯壮夢梦奮奋婦妇孫孙寶宝尋寻導导屬属島岛帶带幫帮廣广廠厂廳厅張张彈弹當当復复憶忆懷怀戰战戲戏擇择擊击擁拥擔担擴扩擺摆攝摄敗败敵敌斷断舊旧暫暂曆历條条棄弃楊杨極极構构槍枪樓楼權权歐欧歲岁歸归殘残殺杀毀毁沒没滅灭湯汤滿满漢汉潔洁濟济灣湾無无煙烟爭争爾尔牆墙狀状獨独獲获畢毕異异療疗盡尽監监眾众礎础禮礼禍祸稱称積积穩稳窮穷競竞筆笔築筑簡简糧粮紀纪約约純纯細细終终組组綜综緊紧績绩續续維维編编練练縮缩織织繼继罰罚習习職职聯联聖圣腦脑臉脸興兴舉举艱艰華华莊庄葉叶藝艺蘇苏虛虚蟲虫術术衛卫衝冲補补裝装製制複复規规覽览觀观訂订訊讯許许設设訪访證证評评試试詢询詳详誠诚談谈諸诸謀谋講讲變变讚赞豐丰負负責责貨货貴贵費费資资賽赛購购贊赞趕赶趨趋跡迹踐践軍军軟软較较載载輕轻輔辅輸输辦办農农連连週周運运達达遠远適适選选遺遗鄉乡醫医釋释針针鋼钢鍵键鎮镇閉闭閱阅隨随險险隱隐雞鸡頁页順顺須须頓顿額额養养驅驱啟启纔才裡里測测別别誰谁裏里顧顾獻献腳脚濃浓壹一貳二隻只樣样們们';
+  const m = {};
+  for (let i = 0; i + 1 < s.length; i += 2) m[s[i]] = s[i + 1];
+  return m;
+})();
+
+/* Whisper 在静音片段常见的“幻觉”输出，识别后过滤 */
+const HALLUCINATIONS = [/字幕由.*提供/, /请不吝点赞/, /订阅.*转发.*打赏/, /明镜与点点/, /Amara\.org/i, /^谢谢观看[。！]?$/, /^(謝謝|谢谢)(收看|观看)/, /优优独播剧场/, /YoYo Television/i];
+
+/* =====================================================================
+ * 二、全局状态与设置
+ * ===================================================================== */
+const state = {
+  segments: [],        // 逐字稿 [{spk,start,end,text,en,aiTypos}]
+  speakers: {},        // 发言人 {id:{name,color}}
+  summary: null,       // 纪要 {overview,overviewEn,chapters:[{seg,title,en,points}],todos:[{text,owner,due,done}]}
+  summaryStatus: 'ready', // ready / pending / generating
+  isDemo: true,
+  activeIdx: -1,
+  tab: 'transcript',
+  lang: 'orig',        // orig / en / both
+  query: '',
+  matchIdx: -1,
+  typoMode: false,
+  editing: -1,
+  busy: false,         // 有识别任务进行中
+  recording: false,
+  userScrollAt: 0
+};
+
+const PRESETS = {
+  groq:        { base: 'https://api.groq.com/openai/v1',   asr: 'whisper-large-v3-turbo',      llm: 'llama-3.3-70b-versatile' },
+  openai:      { base: 'https://api.openai.com/v1',        asr: 'whisper-1',                   llm: 'gpt-4o-mini' },
+  siliconflow: { base: 'https://api.siliconflow.cn/v1',    asr: 'FunAudioLLM/SenseVoiceSmall', llm: 'Qwen/Qwen2.5-72B-Instruct' },
+  custom:      { base: '', asr: '', llm: '' }
+};
+const DEFAULT_SETTINGS = {
+  engine: 'local',
+  localModel: 'onnx-community/whisper-base',
+  localDevice: 'auto',
+  preset: 'groq',
+  cloudBase: PRESETS.groq.base, cloudKey: '', cloudModel: PRESETS.groq.asr, cloudConc: 4,
+  lang: 'zh',
+  llmOn: false, llmBase: PRESETS.groq.base, llmKey: '', llmModel: PRESETS.groq.llm
+};
+// 设置保存在本机浏览器（localStorage 不可用时仅本次有效）
+let settings = { ...DEFAULT_SETTINGS };
+try { Object.assign(settings, JSON.parse(localStorage.getItem('tingyu-settings') || '{}')); } catch (e) {}
+function saveSettings() { try { localStorage.setItem('tingyu-settings', JSON.stringify(settings)); } catch (e) {} }
+
+const $ = (id) => document.getElementById(id);
+
+/* =====================================================================
+ * 三、工具函数
+ * ===================================================================== */
+function fmt(sec) {
+  sec = Math.max(0, Math.floor(sec || 0));
+  const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60;
+  return [h, m, s].map(n => String(n).padStart(2, '0')).join(':');
+}
+function fmtDur(sec) { // 人类可读时长：1 小时 20 分
+  sec = Math.round(sec);
+  if (sec < 60) return sec + ' 秒';
+  const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60);
+  return h ? `${h} 小时 ${m} 分` : `${m} 分 ${sec % 60} 秒`;
+}
+function srtTime(sec) {
+  const ms = Math.round((sec % 1) * 1000) % 1000;
+  return fmt(sec) + ',' + String(ms).padStart(3, '0');
+}
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+function reEsc(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+// 文本转义 + 搜索关键词高亮
+function hl(text, q = state.query) {
+  const safe = esc(text ?? '');
+  if (!q) return safe;
+  return safe.replace(new RegExp(reEsc(esc(q)), 'gi'), m => `<mark class="hl">${m}</mark>`);
+}
+let toastTimer;
+function toast(msg, ms = 2600) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.style.opacity = '1';
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => (t.style.opacity = '0'), ms);
+}
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+function fmtSize(b) {
+  if (b >= 1024 ** 3) return (b / 1024 ** 3).toFixed(2) + ' GB';
+  if (b >= 1024 ** 2) return (b / 1024 ** 2).toFixed(1) + ' MB';
+  return Math.max(1, Math.round(b / 1024)) + ' KB';
+}
+function spk(id) { return state.speakers[id] || { name: '发言人', color: 0 }; }
+function pal(id) { return PALETTE[spk(id).color % PALETTE.length]; }
+// 头像文字：“发言人 2”显示 2，其余显示名字首字
+function avatarText(id) { const n = spk(id).name; return (n.match(/\d+$/) || [n.slice(0, 1)])[0]; }
+
+/* =====================================================================
+ * 四、播放器（统一封装：时间轴模式 / 真实音视频）
+ *    - virtual：示例数据没有真实音频，用计时器模拟时间轴
+ *    - media  ：上传或录音后，用 <video> 元素播放真实媒体
+ * ===================================================================== */
+const media = $('media');
+const player = {
+  mode: 'virtual', vTime: 0, vDur: DEMO_DURATION, playing: false, rate: 1, last: 0,
+  get duration() {
+    if (this.mode === 'media' && isFinite(media.duration) && media.duration > 0) return media.duration;
+    return this.vDur;
+  },
+  get time() { return this.mode === 'media' ? media.currentTime : this.vTime; },
+  play() {
+    if (this.time >= this.duration - 0.05) this.seek(0);
+    this.playing = true;
+    this.last = performance.now();
+    if (this.mode === 'media') media.play().catch(() => { this.playing = false; updatePlayBtn(); toast('浏览器无法播放该格式，但不影响转写结果查看'); });
+    updatePlayBtn();
+  },
+  pause() {
+    this.playing = false;
+    if (this.mode === 'media') media.pause();
+    updatePlayBtn();
+  },
+  toggle() { this.playing ? this.pause() : this.play(); },
+  seek(t, force = true) {
+    t = Math.min(Math.max(0, t), this.duration);
+    if (this.mode === 'media') media.currentTime = t; else this.vTime = t;
+    onTick(force, t);
+  },
+  setRate(r) { this.rate = r; media.playbackRate = r; },
+  useVirtual(dur) {
+    this.pause();
+    this.mode = 'virtual'; this.vDur = dur; this.vTime = 0;
+    if (media.src) { URL.revokeObjectURL(media.src); media.removeAttribute('src'); media.load(); }
+    media.classList.add('hidden'); $('waveWrap').classList.remove('hidden');
+  },
+  useMedia(src, isVideo, fallbackDur) {
+    this.pause();
+    if (media.src) URL.revokeObjectURL(media.src);
+    this.mode = 'media'; this.vDur = fallbackDur || 0;
+    media.src = src; media.playbackRate = this.rate;
+    media.classList.toggle('hidden', !isVideo);
+    $('waveWrap').classList.toggle('hidden', isVideo);
+  }
+};
+
+function loop(now) {
+  if (player.playing) {
+    if (player.mode === 'virtual') {
+      player.vTime += (now - player.last) / 1000 * player.rate;
+      if (player.vTime >= player.vDur) { player.vTime = player.vDur; player.pause(); }
+    }
+    onTick(false);
+  }
+  player.last = now;
+  requestAnimationFrame(loop);
+}
+media.addEventListener('ended', () => { player.pause(); onTick(false); });
+media.addEventListener('loadedmetadata', () => { onTick(false); updateInfo(); });
+
+function updatePlayBtn() {
+  $('icPlay').classList.toggle('hidden', player.playing);
+  $('icPause').classList.toggle('hidden', !player.playing);
+}
+
+let dragging = false;
+function onTick(forceScroll, tOverride) {
+  const t = tOverride ?? player.time, d = player.duration || 1;
+  const pct = Math.min(100, t / d * 100);
+  if (!dragging) $('progress').value = Math.round(pct * 10);
+  $('progress').style.setProperty('--p', pct + '%');
+  $('curTime').textContent = fmt(t);
+  $('durTime').textContent = fmt(player.duration);
+  paintWave(pct);
+  setActive(findSegIdx(t), forceScroll);
+}
+
+// 二分查找当前时间所在的台词行
+function findSegIdx(t) {
+  const s = state.segments;
+  let lo = 0, hi = s.length - 1, ans = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (s[mid].start <= t + 0.01) { ans = mid; lo = mid + 1; } else hi = mid - 1;
+  }
+  return ans;
+}
+
+function setActive(idx, forceScroll) {
+  const list = $('transcriptList');
+  if (idx !== state.activeIdx) {
+    list.querySelector('.seg.active')?.classList.remove('active');
+    if (idx >= 0) list.querySelector(`.seg[data-i="${idx}"]`)?.classList.add('active');
+    state.activeIdx = idx;
+    // 播放中自动跟随（用户 3 秒内手动滚动过则暂不跟随）
+    if (!forceScroll && player.playing && Date.now() - state.userScrollAt > 3000) scrollToSeg(idx);
+  }
+  if (forceScroll) scrollToSeg(idx);
+}
+function scrollToSeg(idx) {
+  if (idx < 0 || state.tab !== 'transcript') return;
+  const row = $('transcriptList').querySelector(`.seg[data-i="${idx}"]`);
+  const panel = $('panelTranscript');
+  if (!row) return;
+  panel.scrollTo({ top: row.offsetTop - panel.clientHeight / 3, behavior: 'smooth' });
+}
+['wheel', 'touchmove'].forEach(ev => $('panelTranscript').addEventListener(ev, () => (state.userScrollAt = Date.now()), { passive: true }));
+
+/* ---------- 波形（示例为随机柱高；真实文件按识别出的音量绘制） ---------- */
+const WAVE_BARS = 90;
+let wavePlayed = -1;
+function buildWave(levels) {
+  let x = 7;
+  const rnd = () => ((x = (x * 9301 + 49297) % 233280) / 233280);
+  const hs = levels || Array.from({ length: WAVE_BARS }, (_, i) => 15 + Math.abs(Math.sin(i / 6)) * 45 + rnd() * 40);
+  $('wave').innerHTML = hs.map(h => `<span class="flex-1 rounded-full bg-slate-300" style="height:${Math.max(6, Math.min(100, h))}%"></span>`).join('');
+  wavePlayed = -1;
+}
+function paintWave(pct) {
+  const n = Math.round(pct / 100 * WAVE_BARS);
+  if (n === wavePlayed) return;
+  wavePlayed = n;
+  [...$('wave').children].forEach((b, i) => {
+    b.classList.toggle('bg-blue-500', i < n);
+    b.classList.toggle('bg-slate-300', i >= n);
+  });
+}
+$('wave').addEventListener('click', (e) => {
+  const r = e.currentTarget.getBoundingClientRect();
+  player.seek((e.clientX - r.left) / r.width * player.duration);
+});
+
+/* ---------- 播放器控件事件 ---------- */
+$('btnPlay').onclick = () => player.toggle();
+$('btnBack').onclick = () => player.seek(player.time - 15);
+$('btnFwd').onclick = () => player.seek(player.time + 15);
+$('rate').onchange = (e) => player.setRate(+e.target.value);
+
+// 拖动进度条：实时跳转并让右侧文字滚动定位
+const progress = $('progress');
+progress.addEventListener('pointerdown', () => (dragging = true));
+progress.addEventListener('input', () => {
+  dragging = true;
+  player.seek(progress.value / 1000 * player.duration, true);
+});
+progress.addEventListener('change', () => (dragging = false));
+window.addEventListener('pointerup', () => (dragging = false));
+
+let lastVol = 80;
+function setVolume(v) {
+  v = Math.max(0, Math.min(100, v));
+  $('volume').value = v;
+  $('volume').style.setProperty('--p', v + '%');
+  media.volume = v / 100;
+  media.muted = v === 0;
+  $('icVol').classList.toggle('hidden', v === 0);
+  $('icMute').classList.toggle('hidden', v !== 0);
+}
+$('volume').addEventListener('input', (e) => { setVolume(+e.target.value); if (+e.target.value > 0) lastVol = +e.target.value; });
+$('btnMute').onclick = () => setVolume(+$('volume').value === 0 ? (lastVol || 80) : 0);
+
+/* =====================================================================
+ * 五、文字记录渲染
+ * ===================================================================== */
+// 某一行的错别字：词典命中 + 大模型识别结果
+function segTypos(seg) {
+  const list = [];
+  for (const [w, r] of Object.entries(TYPO_DICT)) if (seg.text.includes(w)) list.push({ wrong: w, right: r });
+  for (const t of seg.aiTypos || []) if (t.wrong && t.right && t.wrong !== t.right && seg.text.includes(t.wrong) && !list.some(x => x.wrong === t.wrong)) list.push(t);
+  return list;
+}
+function segTextHtml(seg, i) {
+  const origHtml = state.typoMode ? typoHtml(seg, i) : hl(seg.text);
+  if (state.lang === 'en') return seg.en ? hl(seg.en) : `<span class="text-slate-400">${hl(seg.text)}</span>`;
+  if (state.lang === 'both') return `${origHtml}${seg.en ? `<div class="mt-1 text-[13px] leading-6 text-slate-500">${hl(seg.en)}</div>` : ''}`;
+  return origHtml;
+}
+function typoHtml(seg, segIdx) {
+  const typos = segTypos(seg);
+  if (!typos.length) return hl(seg.text);
+  const map = Object.fromEntries(typos.map(t => [t.wrong, t.right]));
+  const re = new RegExp(typos.map(t => reEsc(t.wrong)).sort((a, b) => b.length - a.length).join('|'), 'g');
+  let out = '', last = 0, m;
+  while ((m = re.exec(seg.text))) {
+    out += hl(seg.text.slice(last, m.index));
+    out += `<span class="typo" data-seg="${segIdx}" data-w="${esc(m[0])}" title="建议修改为「${esc(map[m[0]])}」">${hl(m[0])}</span>`;
+    last = m.index + m[0].length;
+  }
+  return out + hl(seg.text.slice(last));
+}
+
+function segRowHtml(seg, i) {
+  const sp = spk(seg.spk), c = pal(seg.spk);
+  return `
+  <div class="seg group flex gap-3 px-2 sm:px-3 py-2 rounded-lg" data-i="${i}">
+    <div class="w-8 h-8 shrink-0 rounded-full ${c.avatar} text-white text-xs font-medium flex items-center justify-center mt-0.5">${esc(avatarText(seg.spk))}</div>
+    <div class="flex-1 min-w-0">
+      <div class="flex items-center gap-2 text-xs">
+        <button class="spk-btn font-medium text-slate-700 hover:text-blue-600" data-i="${i}" title="修改发言人">${esc(sp.name)}</button>
+        <span class="ts text-slate-400 tabular">${fmt(seg.start)}</span>
+        <button class="edit-btn ml-auto opacity-0 group-hover:opacity-100 focus:opacity-100 text-slate-400 hover:text-blue-600 px-1.5 py-0.5 rounded hover:bg-blue-50 transition-opacity" data-i="${i}" title="编辑此段">编辑</button>
+      </div>
+      <div class="bubble mt-1 rounded-lg px-3 py-2 ${c.bubble} leading-7 text-[14.5px] text-slate-800 cursor-pointer select-text break-words">${segTextHtml(seg, i)}</div>
+    </div>
+  </div>`;
+}
+
+function renderTranscript() {
+  const list = $('transcriptList');
+  if (!state.segments.length) {
+    list.innerHTML = state.busy
+      ? `<div class="py-24 text-center text-slate-400">识别结果会在这里逐段出现…</div>`
+      : `<div class="py-24 text-center text-slate-400">暂无转写内容，点击左侧「实时录音」或「上传音视频」开始</div>`;
+  } else {
+    list.innerHTML = state.segments.map(segRowHtml).join('');
+  }
+  state.activeIdx = -1;
+  setActive(findSegIdx(player.time), false);
+  refreshTypoUI();
+  refreshSearch(false);
+}
+// 识别过程中频繁新增内容，合并刷新
+let renderTimer = 0;
+function scheduleRender() {
+  if (renderTimer) return;
+  renderTimer = setTimeout(() => { renderTimer = 0; renderTranscript(); updateInfo(); }, 400);
+}
+
+// 点击文字 → 播放器跳转；选中文字时不跳转，方便复制
+$('transcriptList').addEventListener('click', (e) => {
+  const typo = e.target.closest('.typo');
+  if (typo) { fixTypo(+typo.dataset.seg, typo.dataset.w); return; }
+  const eb = e.target.closest('.edit-btn');
+  if (eb) { startEdit(+eb.dataset.i); return; }
+  const sb = e.target.closest('.spk-btn');
+  if (sb) { e.stopPropagation(); openSpkMenu(+sb.dataset.i, sb); return; }
+  const row = e.target.closest('.seg');
+  if (!row || state.editing >= 0 || state.recording) return;
+  if (window.getSelection().toString().trim()) return;
+  const i = +row.dataset.i;
+  player.seek(state.segments[i].start, false);
+  setActive(i, true);
+  if (!player.playing) player.play();
+});
+
+/* ---------- 手动编辑 ---------- */
+function startEdit(i) {
+  if (state.recording) return;
+  const bubble = $('transcriptList').querySelector(`.seg[data-i="${i}"] .bubble`);
+  state.editing = i;
+  bubble.textContent = state.segments[i].text; // 编辑始终针对原文
+  bubble.contentEditable = 'true';
+  bubble.focus();
+  document.getSelection().selectAllChildren(bubble);
+  document.getSelection().collapseToEnd();
+  const finish = (save) => {
+    bubble.removeEventListener('blur', onBlur);
+    bubble.removeEventListener('keydown', onKey);
+    bubble.contentEditable = 'false';
+    if (save) {
+      const v = bubble.textContent.trim();
+      if (v && v !== state.segments[i].text) { state.segments[i].text = v; state.segments[i].en = ''; toast('已保存修改'); }
+    }
+    state.editing = -1;
+    renderTranscript(); updateInfo();
+  };
+  const onBlur = () => finish(true);
+  const onKey = (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); bubble.blur(); }
+    if (e.key === 'Escape') { bubble.removeEventListener('blur', onBlur); finish(false); }
+  };
+  bubble.addEventListener('blur', onBlur);
+  bubble.addEventListener('keydown', onKey);
+}
+
+/* ---------- 发言人修改（识别结果默认只有一位发言人，可手动区分） ---------- */
+let spkMenuIdx = -1;
+function openSpkMenu(i, anchor) {
+  spkMenuIdx = i;
+  const cur = state.segments[i].spk;
+  const menu = $('spkMenu');
+  menu.innerHTML = `
+    <div class="px-3 py-1.5 text-xs text-slate-400">将此段设为</div>
+    ${Object.entries(state.speakers).map(([id, s]) => `
+      <button class="spk-opt w-full text-left px-3 py-1.5 hover:bg-slate-50 flex items-center gap-2" data-id="${id}">
+        <span class="w-4 h-4 rounded-full ${PALETTE[s.color % PALETTE.length].avatar}"></span>${esc(s.name)}${id === cur ? '<span class="ml-auto text-blue-600">✓</span>' : ''}
+      </button>`).join('')}
+    <button class="spk-new w-full text-left px-3 py-1.5 hover:bg-slate-50 text-blue-600">＋ 新发言人</button>
+    <div class="my-1 border-t border-slate-100"></div>
+    <button class="spk-after w-full text-left px-3 py-1.5 hover:bg-slate-50 text-slate-600">此段及之后连续同一人都改</button>
+    <button class="spk-rename w-full text-left px-3 py-1.5 hover:bg-slate-50 text-slate-600">重命名「${esc(spk(cur).name)}」</button>`;
+  const r = anchor.getBoundingClientRect();
+  menu.style.left = Math.min(r.left, innerWidth - 200) + 'px';
+  menu.style.top = Math.min(r.bottom + 4, innerHeight - 260) + 'px';
+  menu.classList.remove('hidden');
+}
+let spkAfterMode = false;
+$('spkMenu').addEventListener('click', (e) => {
+  e.stopPropagation();
+  const i = spkMenuIdx, seg = state.segments[i];
+  if (!seg) return;
+  const assign = (id) => {
+    if (spkAfterMode) {
+      const old = seg.spk;
+      for (let k = i; k < state.segments.length && state.segments[k].spk === old; k++) state.segments[k].spk = id;
+    } else seg.spk = id;
+    spkAfterMode = false;
+    closeSpkMenu(); renderTranscript(); updateInfo();
+  };
+  const opt = e.target.closest('.spk-opt');
+  if (opt) return assign(opt.dataset.id);
+  if (e.target.closest('.spk-after')) { spkAfterMode = true; toast('请选择要改成的发言人'); return; }
+  if (e.target.closest('.spk-new')) {
+    const n = Object.keys(state.speakers).length + 1;
+    const name = prompt('新发言人名称', '发言人 ' + n);
+    if (!name) return;
+    const id = 's' + Date.now();
+    state.speakers[id] = { name: name.trim().slice(0, 12), color: n - 1 };
+    return assign(id);
+  }
+  if (e.target.closest('.spk-rename')) {
+    const name = prompt('重命名发言人', spk(seg.spk).name);
+    if (name && name.trim()) { state.speakers[seg.spk].name = name.trim().slice(0, 12); closeSpkMenu(); renderTranscript(); updateInfo(); }
+  }
+});
+function closeSpkMenu() { $('spkMenu').classList.add('hidden'); spkAfterMode = false; }
+document.addEventListener('click', closeSpkMenu);
+
+/* ---------- 智能纠错 ---------- */
+function countTypos() { return state.segments.reduce((n, s) => n + segTypos(s).length, 0); }
+function refreshTypoUI() {
+  const n = countTypos();
+  $('typoBadge').textContent = n;
+  $('typoBadge').classList.toggle('hidden', n === 0 || state.typoMode);
+  $('typoBar').classList.toggle('hidden', !(state.typoMode && state.lang !== 'en'));
+  $('typoBarText').textContent = n ? `发现 ${n} 处疑似错别字，点击红色波浪线文字可逐条修正` : '未发现错别字';
+  $('typoFixAll').classList.toggle('hidden', n === 0);
+  $('btnTypo').classList.toggle('border-blue-400', state.typoMode);
+  $('btnTypo').classList.toggle('text-blue-600', state.typoMode);
+  $('btnTypo').classList.toggle('bg-blue-50', state.typoMode);
+}
+function fixTypo(segIdx, wrong) {
+  const seg = state.segments[segIdx];
+  const t = segTypos(seg).find(x => x.wrong === wrong);
+  if (!t) return;
+  seg.text = seg.text.replace(wrong, t.right);
+  toast(`已将「${wrong}」修正为「${t.right}」`);
+  renderTranscript();
+}
+$('btnTypo').onclick = async () => {
+  if (state.recording) return;
+  state.typoMode = !state.typoMode;
+  if (state.typoMode) {
+    switchTab('transcript');
+    if (state.lang === 'en') setLang('orig');
+    // 配置了大模型时，对未检查过的内容做一次 AI 纠错
+    if (llmReady() && !state.isDemo && state.segments.some(s => !s.aiChecked)) {
+      try { await aiTypoCheck(); } catch (err) { toast('AI 纠错失败：' + err.message, 4000); }
+    }
+  }
+  renderTranscript();
+};
+$('typoFixAll').onclick = () => {
+  const n = countTypos();
+  state.segments.forEach(s => { for (const t of segTypos(s)) s.text = s.text.split(t.wrong).join(t.right); });
+  toast(`已修正 ${n} 处错别字`);
+  renderTranscript();
+};
+$('typoClose').onclick = () => { state.typoMode = false; renderTranscript(); };
+
+/* =====================================================================
+ * 六、智能纪要渲染
+ * ===================================================================== */
+function renderSummary() {
+  const box = $('summaryBody');
+  if (state.summaryStatus !== 'ready' || !state.summary) {
+    box.innerHTML = state.summaryStatus === 'generating'
+      ? `<div class="py-24 flex flex-col items-center gap-3 text-slate-400"><div class="spinner"></div>正在生成智能纪要…</div>`
+      : `<div class="py-24 text-center text-slate-400">${state.segments.length ? '转写完成后将自动生成智能纪要' : '暂无内容，转写完成后将自动生成智能纪要'}</div>`;
+    refreshSearch(false);
+    return;
+  }
+  const S = state.summary;
+  const en = state.lang === 'en', both = state.lang === 'both';
+  const T = (zh, e, cls = '') => en && e ? hl(e) : both && e ? `${hl(zh)}<span class="block text-[13px] text-slate-400 ${cls}">${hl(e)}</span>` : hl(zh);
+  const chapters = (S.chapters || []).filter(c => state.segments[c.seg]);
+  const done = S.todos.filter(t => t.done).length;
+
+  box.innerHTML = `
+    <div class="flex items-center gap-2 text-xs text-slate-400 mb-5">
+      <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-blue-50 text-blue-600">
+        <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2l2.4 6.6L21 11l-6.6 2.4L12 20l-2.4-6.6L3 11l6.6-2.4z"/></svg>${S.source === 'local' ? '规则提取' : 'AI 生成'}
+      </span>
+      <span>基于 ${state.segments.length} 段发言 · ${new Set(state.segments.map(s => s.spk)).size} 位发言人</span>
+      ${state.isDemo ? '' : '<button id="btnRegen" class="ml-auto text-blue-600 hover:underline">重新生成</button>'}
+    </div>
+    ${S.source === 'local' ? `<div class="mb-5 rounded-lg bg-amber-50 border border-amber-100 px-3 py-2 text-xs text-amber-700 leading-5">当前纪要由本地规则从原文中摘取，较为简单。在「识别设置」中开启大模型后，可生成更准确的总结、章节和待办。</div>` : ''}
+
+    <section class="mb-8">
+      <h3 class="flex items-center gap-2 font-semibold text-slate-900 text-[15px] mb-3"><span class="w-1 h-4 rounded bg-blue-600"></span>内容总结</h3>
+      <p class="leading-7 text-slate-700 text-[14.5px] bg-slate-50 rounded-lg p-4">${T(S.overview, S.overviewEn, 'mt-2 leading-6')}</p>
+    </section>
+
+    <section class="mb-8">
+      <h3 class="flex items-center gap-2 font-semibold text-slate-900 text-[15px] mb-3"><span class="w-1 h-4 rounded bg-blue-600"></span>章节要点</h3>
+      ${chapters.length ? `<ol class="relative border-l border-slate-200 ml-1.5 space-y-5">
+        ${chapters.map(c => `
+          <li class="pl-5 relative">
+            <span class="absolute -left-[5px] top-1.5 w-2.5 h-2.5 rounded-full bg-white border-2 border-blue-500"></span>
+            <div class="flex items-center gap-2 flex-wrap">
+              <button class="chapter-jump text-xs tabular text-blue-600 bg-blue-50 hover:bg-blue-100 rounded px-1.5 py-0.5" data-seg="${c.seg}" title="跳转到此处播放">${fmt(state.segments[c.seg].start)}</button>
+              <span class="font-medium text-slate-800">${T(c.title, c.en)}</span>
+            </div>
+            ${en && c.en ? '' : `<ul class="mt-1.5 space-y-1 text-slate-600 leading-6">
+              ${(c.points || []).map(p => `<li class="flex gap-2"><span class="mt-2.5 w-1 h-1 rounded-full bg-slate-400 shrink-0"></span><span>${hl(p)}</span></li>`).join('')}
+            </ul>`}
+          </li>`).join('')}
+      </ol>` : '<p class="text-slate-400">内容较短，未划分章节</p>'}
+    </section>
+
+    <section class="mb-4">
+      <h3 class="flex items-center gap-2 font-semibold text-slate-900 text-[15px] mb-3">
+        <span class="w-1 h-4 rounded bg-blue-600"></span>待办事项
+        <span class="ml-1 text-xs font-normal text-slate-400 tabular">已完成 ${done}/${S.todos.length}</span>
+      </h3>
+      ${S.todos.length ? `<ul class="divide-y divide-slate-100 border border-slate-200 rounded-lg">
+        ${S.todos.map((t, i) => `
+          <li class="flex items-start gap-3 px-4 py-3 hover:bg-slate-50">
+            <input type="checkbox" class="todo-chk mt-1 w-4 h-4 accent-blue-600 cursor-pointer" data-i="${i}" ${t.done ? 'checked' : ''} />
+            <div class="flex-1 min-w-0">
+              <div class="${t.done ? 'line-through text-slate-400' : 'text-slate-800'} leading-6">${T(t.text, t.en)}</div>
+              <div class="mt-1 flex gap-3 text-xs text-slate-400">
+                <span>负责人：<span class="text-slate-600">${hl(t.owner || '待定')}</span></span>
+                <span>截止：<span class="text-slate-600">${hl(t.due || '未提及')}</span></span>
+              </div>
+            </div>
+          </li>`).join('')}
+      </ul>` : '<p class="text-slate-400">未识别到明确的待办事项</p>'}
+    </section>`;
+  refreshSearch(false);
+}
+
+$('summaryBody').addEventListener('click', async (e) => {
+  const jump = e.target.closest('.chapter-jump');
+  if (jump) {
+    const i = +jump.dataset.seg;
+    switchTab('transcript');
+    player.seek(state.segments[i].start, false);
+    setTimeout(() => setActive(i, true), 260);
+    return;
+  }
+  if (e.target.id === 'btnRegen') await generateSummary();
+});
+$('summaryBody').addEventListener('change', (e) => {
+  if (!e.target.classList.contains('todo-chk')) return;
+  state.summary.todos[+e.target.dataset.i].done = e.target.checked;
+  renderSummary();
+});
+
+/* =====================================================================
+ * 七、Tab 切换（下划线滑动 + 面板淡入）
+ * ===================================================================== */
+function moveIndicator() {
+  const btn = document.querySelector(`.tab-btn[data-tab="${state.tab}"]`);
+  const ind = $('tabIndicator');
+  ind.style.left = btn.offsetLeft + 'px';
+  ind.style.width = btn.offsetWidth + 'px';
+}
+function switchTab(tab) {
+  if (tab === state.tab) return;
+  state.tab = tab;
+  document.querySelectorAll('.tab-btn').forEach(b => {
+    const on = b.dataset.tab === tab;
+    b.classList.toggle('text-blue-600', on);
+    b.classList.toggle('text-slate-500', !on);
+  });
+  $('panelTranscript').className = 'tab-panel absolute inset-0 overflow-y-auto thin-scroll ' + (tab === 'transcript' ? 'is-active' : 'is-hidden');
+  $('panelSummary').className = 'tab-panel absolute inset-0 overflow-y-auto thin-scroll ' + (tab === 'summary' ? 'is-active' : 'is-hidden');
+  moveIndicator();
+  refreshSearch(false);
+}
+document.querySelectorAll('.tab-btn').forEach(b => (b.onclick = () => switchTab(b.dataset.tab)));
+window.addEventListener('resize', moveIndicator);
+
+/* =====================================================================
+ * 八、搜索（高亮 + 计数 + 上下跳转）
+ * ===================================================================== */
+function activePanel() { return state.tab === 'transcript' ? $('panelTranscript') : $('panelSummary'); }
+function refreshSearch(jump) {
+  const marks = [...activePanel().querySelectorAll('mark.hl')];
+  if (!state.query) { $('searchCount').textContent = ''; return; }
+  if (!marks.length) { $('searchCount').textContent = '0/0'; state.matchIdx = -1; return; }
+  if (state.matchIdx >= marks.length || state.matchIdx < 0) state.matchIdx = 0;
+  marks.forEach((m, i) => m.classList.toggle('cur', i === state.matchIdx));
+  $('searchCount').textContent = `${state.matchIdx + 1}/${marks.length}`;
+  if (jump) {
+    const panel = activePanel(), m = marks[state.matchIdx];
+    const top = m.getBoundingClientRect().top - panel.getBoundingClientRect().top + panel.scrollTop;
+    panel.scrollTo({ top: top - panel.clientHeight / 3, behavior: 'smooth' });
+    state.userScrollAt = Date.now();
+  }
+}
+function stepSearch(dir) {
+  const n = activePanel().querySelectorAll('mark.hl').length;
+  if (!n) return;
+  state.matchIdx = (state.matchIdx + dir + n) % n;
+  refreshSearch(true);
+}
+let searchTimer;
+$('search').addEventListener('input', (e) => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    state.query = e.target.value.trim();
+    state.matchIdx = 0;
+    renderTranscript(); renderSummary();
+    refreshSearch(true);
+  }, 150);
+});
+$('search').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); stepSearch(e.shiftKey ? -1 : 1); } });
+$('searchPrev').onclick = () => stepSearch(-1);
+$('searchNext').onclick = () => stepSearch(1);
+
+/* =====================================================================
+ * 九、下拉菜单（翻译 / 导出）
+ * ===================================================================== */
+document.querySelectorAll('[data-dropdown]').forEach(dd => {
+  dd.querySelector('[data-toggle]').addEventListener('click', (e) => {
+    e.stopPropagation();
+    const menu = dd.querySelector('[data-menu]');
+    const willOpen = menu.classList.contains('hidden-menu');
+    closeMenus();
+    if (willOpen) menu.classList.remove('hidden-menu');
+  });
+  dd.querySelector('[data-menu]').addEventListener('click', e => e.stopPropagation());
+});
+function closeMenus() { document.querySelectorAll('[data-menu]').forEach(m => m.classList.add('hidden-menu')); }
+document.addEventListener('click', closeMenus);
+
+/* ---------- 翻译 ---------- */
+const LANG_LABEL = { orig: '原文', en: '英文', both: '中英对照' };
+function setLang(lang) {
+  state.lang = lang;
+  $('langLabel').textContent = LANG_LABEL[lang];
+  document.querySelectorAll('.lang-opt').forEach(o => o.querySelector('.chk').classList.toggle('hidden', o.dataset.lang !== lang));
+}
+document.querySelectorAll('.lang-opt').forEach(o => o.onclick = async () => {
+  closeMenus();
+  const lang = o.dataset.lang;
+  if (lang === state.lang || state.recording) return;
+  if (lang !== 'orig' && state.segments.some(s => !s.en)) {
+    if (!llmReady()) { toast('翻译需要在「识别设置」中开启大模型', 3500); return; }
+    try { await translateAll(); } catch (err) { toast('翻译失败：' + err.message, 4000); return; }
+  }
+  setLang(lang);
+  renderTranscript(); renderSummary();
+});
+
+/* =====================================================================
+ * 十、导出 TXT / SRT / 纪要
+ * ===================================================================== */
+function lineText(seg) {
+  if (state.lang === 'en') return seg.en || seg.text;
+  if (state.lang === 'both') return seg.text + (seg.en ? '\n' + seg.en : '');
+  return seg.text;
+}
+function download(name, content) {
+  const blob = new Blob(['﻿' + content], { type: 'text/plain;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+const baseName = () => $('docTitle').textContent.replace(/\.[^.]+$/, '');
+
+$('exportTxt').onclick = () => {
+  if (!state.segments.length) return toast('暂无可导出的内容');
+  const withT = $('optTime').checked, withS = $('optSpeaker').checked;
+  const body = state.segments.map(s => {
+    const head = [withT ? `[${fmt(s.start)}]` : '', withS ? spk(s.spk).name : ''].filter(Boolean).join(' ');
+    return head ? `${head}\n${lineText(s)}` : lineText(s);
+  }).join('\n\n');
+  download(baseName() + '.txt', `${$('docTitle').textContent}\n${'='.repeat(20)}\n\n${body}\n`);
+  closeMenus(); toast('已导出 TXT 文本');
+};
+$('exportSrt').onclick = () => {
+  if (!state.segments.length) return toast('暂无可导出的内容');
+  const withS = $('optSpeaker').checked;
+  const body = state.segments.map((s, i) =>
+    `${i + 1}\n${srtTime(s.start)} --> ${srtTime(Math.max(s.start + 0.5, s.end - 0.05))}\n${withS ? spk(s.spk).name + '：' : ''}${lineText(s)}`
+  ).join('\n\n');
+  download(baseName() + '.srt', body + '\n');
+  closeMenus(); toast('已导出 SRT 字幕');
+};
+$('exportSummary').onclick = () => {
+  const S = state.summary;
+  if (!S) return toast('纪要尚未生成');
+  const withT = $('optTime').checked;
+  const chapters = (S.chapters || []).filter(c => state.segments[c.seg]);
+  const txt = [
+    `${$('docTitle').textContent} · 智能纪要`, '',
+    '【内容总结】', S.overview, '',
+    '【章节要点】',
+    ...chapters.map(c => `${withT ? fmt(state.segments[c.seg].start) + '  ' : ''}${c.title}\n${(c.points || []).map(p => '  · ' + p).join('\n')}`), '',
+    '【待办事项】',
+    ...S.todos.map(t => `${t.done ? '[✓]' : '[ ]'} ${t.text}（负责人：${t.owner || '待定'}，截止：${t.due || '未提及'}）`)
+  ].join('\n');
+  download(baseName() + '-纪要.txt', txt + '\n');
+  closeMenus(); toast('已导出智能纪要');
+};
+
+/* =====================================================================
+ * 十一、统计信息
+ * ===================================================================== */
+function speakerTime() {
+  const c = {};
+  state.segments.forEach(s => { c[s.spk] = (c[s.spk] || 0) + Math.max(1, (s.end ?? s.start) - s.start); });
+  return c;
+}
+function updateInfo() {
+  const d = Math.max(player.duration || 0, state.segments.length ? state.segments[state.segments.length - 1].end || 0 : 0);
+  const words = state.segments.reduce((n, s) => n + s.text.replace(/\s/g, '').length, 0);
+  const cnt = speakerTime(), total = Object.values(cnt).reduce((a, b) => a + b, 0) || 1;
+  $('infoDur').textContent = fmt(d).replace(/^00:/, '');
+  $('infoWords').textContent = words;
+  $('infoSegs').textContent = state.segments.length;
+  $('speakerStats').innerHTML = Object.keys(cnt).length ? Object.entries(cnt).map(([k, v]) => {
+    const p = Math.round(v / total * 100), c = pal(k);
+    return `<div class="flex items-center gap-2">
+        <span class="w-6 h-6 rounded-full ${c.avatar} text-white text-[11px] flex items-center justify-center">${esc(avatarText(k))}</span>
+        <span class="w-16 truncate text-slate-600">${esc(spk(k).name)}</span>
+        <div class="flex-1 h-1.5 rounded-full bg-slate-100 overflow-hidden"><div class="h-full ${c.bar}" style="width:${p}%"></div></div>
+        <span class="w-9 text-right text-xs text-slate-400 tabular">${p}%</span>
+      </div>`;
+  }).join('') : '<div class="text-xs text-slate-400">暂无数据</div>';
+  $('docMeta').textContent = `${new Date().toISOString().slice(0, 10)} · ${fmt(d)} · ${new Set(state.segments.map(s => s.spk)).size} 位发言人`;
+  $('demoBadge').classList.toggle('hidden', !state.isDemo);
+}
+
+/* ---------- 状态徽标、任务条、通用 loading ---------- */
+function setBusy(b, label) {
+  state.busy = b;
+  $('btnRecord').disabled = b;
+  $('btnUpload').disabled = b;
+  const badge = $('statusBadge');
+  badge.className = 'hidden sm:inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded ' + (b ? 'bg-blue-50 text-blue-600' : 'bg-emerald-50 text-emerald-600');
+  badge.innerHTML = `<span class="w-1.5 h-1.5 rounded-full ${b ? 'bg-blue-500 rec-dot' : 'bg-emerald-500'}"></span>${label || (b ? '转写中' : '转写完成')}`;
+}
+function jobUI(text, pct, sub) {
+  $('jobBar').classList.remove('hidden');
+  $('jobText').textContent = text;
+  if (pct != null) $('jobBarFill').style.width = Math.max(0, Math.min(100, pct)) + '%';
+  $('jobSub').textContent = sub || '';
+}
+function hideJobUI() { $('jobBar').classList.add('hidden'); }
+async function withLoading(text, fn) {
+  $('loading').classList.remove('hidden');
+  $('loadingText').textContent = text;
+  $('loadingSub').textContent = '';
+  try { return await fn((sub) => ($('loadingSub').textContent = sub)); }
+  finally { $('loading').classList.add('hidden'); }
+}
+
+/* =====================================================================
+ * 十二、音频解码：把各种格式转换为 16kHz 单声道 PCM
+ *    - WAV：直接按字节分段读取，几个小时的文件也不会占满内存
+ *    - MP3：按帧边界切成小段分别解码，同样支持超大文件
+ *    - 其他格式：交给浏览器整体解码（受浏览器支持和内存限制）
+ * ===================================================================== */
+const SR = 16000;
+
+// 任意采样率的单声道数据重采样到 16kHz（用浏览器内置的高质量重采样）
+async function resampleTo16k(f32, sr) {
+  if (sr === SR || !f32.length) return f32;
+  const ctx = new OfflineAudioContext(1, Math.ceil(f32.length * SR / sr), SR);
+  const buf = ctx.createBuffer(1, f32.length, sr);
+  buf.copyToChannel(f32, 0);
+  const src = ctx.createBufferSource();
+  src.buffer = buf; src.connect(ctx.destination); src.start();
+  return (await ctx.startRendering()).getChannelData(0);
+}
+// 多声道 AudioBuffer → 单声道
+function toMono(ab) {
+  if (ab.numberOfChannels === 1) return ab.getChannelData(0);
+  const out = new Float32Array(ab.length);
+  for (let c = 0; c < ab.numberOfChannels; c++) {
+    const d = ab.getChannelData(c);
+    for (let i = 0; i < d.length; i++) out[i] += d[i] / ab.numberOfChannels;
+  }
+  return out;
+}
+// 浏览器解码一段压缩音频，输出 16kHz 单声道
+async function decodeChunk(arrayBuffer) {
+  const ctx = new OfflineAudioContext(1, 1, SR);
+  const ab = await ctx.decodeAudioData(arrayBuffer);
+  return ab.sampleRate === SR ? toMono(ab) : resampleTo16k(toMono(ab), ab.sampleRate);
+}
+
+/* ---- WAV 解析 ---- */
+async function parseWav(file) {
+  const head = new DataView(await file.slice(0, Math.min(file.size, 1 << 20)).arrayBuffer());
+  const tag = (o) => String.fromCharCode(head.getUint8(o), head.getUint8(o + 1), head.getUint8(o + 2), head.getUint8(o + 3));
+  if (head.byteLength < 44 || tag(0) !== 'RIFF' || tag(8) !== 'WAVE') return null;
+  let p = 12, fmtInfo = null;
+  while (p + 8 <= head.byteLength) {
+    const id = tag(p), size = head.getUint32(p + 4, true);
+    if (id === 'fmt ') {
+      let format = head.getUint16(p + 8, true);
+      if (format === 0xFFFE) format = head.getUint16(p + 32, true); // WAVE_FORMAT_EXTENSIBLE
+      fmtInfo = { format, ch: head.getUint16(p + 10, true), sr: head.getUint32(p + 12, true), align: head.getUint16(p + 20, true), bits: head.getUint16(p + 22, true) };
+    } else if (id === 'data' && fmtInfo) {
+      const offset = p + 8;
+      let dataSize = size;
+      if (!dataSize || offset + dataSize > file.size) dataSize = file.size - offset;
+      if (![1, 3].includes(fmtInfo.format)) return null;
+      return { ...fmtInfo, offset, dataSize, duration: dataSize / (fmtInfo.sr * fmtInfo.align) };
+    }
+    p += 8 + size + (size & 1);
+  }
+  return null;
+}
+async function* wavPieces(file, w) {
+  const frames = 60 * w.sr; // 每次读 60 秒
+  const bps = w.bits / 8;
+  for (let pos = 0; pos < w.dataSize; pos += frames * w.align) {
+    const len = Math.min(frames * w.align, w.dataSize - pos);
+    const dv = new DataView(await file.slice(w.offset + pos, w.offset + pos + len).arrayBuffer());
+    const n = Math.floor(dv.byteLength / w.align);
+    const out = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      let sum = 0;
+      for (let c = 0; c < w.ch; c++) {
+        const o = i * w.align + c * bps;
+        let v;
+        if (w.format === 3) v = bps === 8 ? dv.getFloat64(o, true) : dv.getFloat32(o, true);
+        else if (bps === 1) v = (dv.getUint8(o) - 128) / 128;
+        else if (bps === 2) v = dv.getInt16(o, true) / 32768;
+        else if (bps === 3) v = ((dv.getUint8(o) | (dv.getUint8(o + 1) << 8) | (dv.getInt8(o + 2) << 16))) / 8388608;
+        else v = dv.getInt32(o, true) / 2147483648;
+        sum += v;
+      }
+      out[i] = sum / w.ch;
+    }
+    yield await resampleTo16k(out, w.sr);
+  }
+}
+
+/* ---- MP3 按帧切片 ---- */
+const MP3_BR1 = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320];
+const MP3_BR2 = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160];
+const MP3_SR = { 3: [44100, 48000, 32000], 2: [22050, 24000, 16000], 0: [11025, 12000, 8000] };
+function mp3FrameLen(b, i) {
+  if (b[i] !== 0xFF || (b[i + 1] & 0xE0) !== 0xE0) return 0;
+  const ver = (b[i + 1] >> 3) & 3, layer = (b[i + 1] >> 1) & 3, br = b[i + 2] >> 4, sri = (b[i + 2] >> 2) & 3, pad = (b[i + 2] >> 1) & 1;
+  if (ver === 1 || layer !== 1 || br === 0 || br === 15 || sri === 3) return 0;
+  const sr = MP3_SR[ver][sri];
+  return ver === 3 ? Math.floor(144000 * MP3_BR1[br] / sr) + pad : Math.floor(72000 * MP3_BR2[br] / sr) + pad;
+}
+// 从 from 开始找下一个有效帧头（连续两帧校验）
+function findMp3Sync(b, from) {
+  for (let i = from; i + 4 < b.length; i++) {
+    const len = mp3FrameLen(b, i);
+    if (len && i + len + 4 < b.length && mp3FrameLen(b, i + len)) return i;
+  }
+  return -1;
+}
+async function* mp3Pieces(file) {
+  const SLICE = 4 * 1024 * 1024; // 每段约 4MB
+  let pos = 0;
+  while (pos < file.size) {
+    let end = Math.min(file.size, pos + SLICE);
+    if (end < file.size) {
+      // 把切分点对齐到下一个帧头，避免截断音频帧
+      const win = new Uint8Array(await file.slice(end, Math.min(file.size, end + 16384)).arrayBuffer());
+      const k = findMp3Sync(win, 0);
+      end = k >= 0 ? end + k : Math.min(file.size, end + 16384);
+    }
+    const buf = await file.slice(pos, end).arrayBuffer();
+    yield await decodeChunk(buf);
+    pos = end;
+  }
+}
+
+/* ---- 其他格式：整体解码 ---- */
+async function* wholePieces(file) {
+  if (file.size > 1.5 * 1024 ** 3) throw new Error('该格式的文件过大，浏览器无法一次解码，请转换为 MP3 或 WAV 后上传');
+  let pcm;
+  try { pcm = await decodeChunk(await file.arrayBuffer()); }
+  catch (e) { throw new Error('浏览器无法解码该格式（如 WMA、AMR、部分 AVI），请转换为 MP3 / WAV / M4A 后上传'); }
+  for (let i = 0; i < pcm.length; i += 60 * SR) yield pcm.subarray(i, i + 60 * SR);
+}
+
+async function* pcmSource(file, ext) {
+  if (ext === 'wav') {
+    const w = await parseWav(file);
+    if (w) { yield* wavPieces(file, w); return; }
+  }
+  if (ext === 'mp3') {
+    const head = new Uint8Array(await file.slice(0, 65536).arrayBuffer());
+    if (findMp3Sync(head, 0) >= 0) { yield* mp3Pieces(file); return; }
+  }
+  yield* wholePieces(file);
+}
+
+/* ---- 把连续 PCM 切成识别块：在静音处下刀，避免把一句话切断 ---- */
+function quietCut(pcm, from, to) {
+  const W = 800; // 50ms 窗口
+  let best = to, bestE = Infinity;
+  for (let s = from; s + W <= Math.min(to, pcm.length); s += W / 2) {
+    let e = 0;
+    for (let i = s; i < s + W; i++) e += pcm[i] * pcm[i];
+    if (e < bestE) { bestE = e; best = s + W / 2; }
+  }
+  return Math.floor(best);
+}
+function concatF32(list, total) {
+  if (list.length === 1) return list[0];
+  const out = new Float32Array(total);
+  let o = 0;
+  for (const a of list) { out.set(a, o); o += a.length; }
+  return out;
+}
+async function* toBlocks(source, blockSec) {
+  let bufs = [], len = 0, emitted = 0;
+  const lo = Math.round((blockSec - Math.min(6, blockSec * 0.25)) * SR), hi = Math.round((blockSec + 2) * SR);
+  for await (const pcm of source) {
+    bufs.push(pcm); len += pcm.length;
+    while (len >= hi) {
+      const all = concatF32(bufs, len);
+      const cut = quietCut(all, lo, hi);
+      yield { start: emitted / SR, pcm: all.slice(0, cut) };
+      emitted += cut;
+      bufs = [all.slice(cut)]; len = bufs[0].length;
+    }
+  }
+  if (len > 0.3 * SR) yield { start: emitted / SR, pcm: concatF32(bufs, len) };
+}
+function rms(pcm) {
+  let s = 0;
+  for (let i = 0; i < pcm.length; i += 4) s += pcm[i] * pcm[i];
+  return Math.sqrt(s / Math.max(1, pcm.length / 4));
+}
+// 16kHz 单声道 PCM → WAV 文件（上传云端、录音回放用）
+function encodeWav(pcmList, total) {
+  const buf = new ArrayBuffer(44 + total * 2), dv = new DataView(buf);
+  const w = (o, s) => [...s].forEach((ch, i) => dv.setUint8(o + i, ch.charCodeAt(0)));
+  w(0, 'RIFF'); dv.setUint32(4, 36 + total * 2, true); w(8, 'WAVE'); w(12, 'fmt ');
+  dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+  dv.setUint32(24, SR, true); dv.setUint32(28, SR * 2, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
+  w(36, 'data'); dv.setUint32(40, total * 2, true);
+  let o = 44;
+  for (const pcm of pcmList) for (let i = 0; i < pcm.length; i++, o += 2) dv.setInt16(o, Math.max(-1, Math.min(1, pcm[i])) * 0x7FFF, true);
+  return new Blob([buf], { type: 'audio/wav' });
+}
+
+/* =====================================================================
+ * 十三、识别文本后处理：繁转简、去幻觉、切句
+ * ===================================================================== */
+function cleanText(t) {
+  t = String(t || '').replace(/<\|[^|]*\|>/g, '').replace(/\s+/g, ' ').trim();
+  if (settings.lang === 'zh' || settings.lang === 'auto') t = t.replace(/[一-鿿]/g, ch => T2S[ch] || ch);
+  if (HALLUCINATIONS.some(re => re.test(t))) return '';
+  return t;
+}
+// 没有句级时间戳的结果：按标点切句，按字数比例分配时间
+function splitTimed(text, start, dur) {
+  text = cleanText(text);
+  if (!text) return [];
+  let parts = text.match(/[^。！？!?；;]+[。！？!?；;]?/g) || [text];
+  parts = parts.flatMap(p => p.length > 60 ? p.match(/.{1,40}([，,、]|$)|.{1,40}/g) : [p]).map(s => s.trim()).filter(Boolean);
+  const total = parts.reduce((n, p) => n + p.length, 0) || 1;
+  let t = start;
+  return parts.map(p => { const d = dur * p.length / total; const seg = { start: t, end: t + d, text: p }; t += d; return seg; });
+}
+
+/* =====================================================================
+ * 十四、识别引擎
+ *    本地：transformers.js 在 Web Worker 中运行 Whisper（WebGPU 优先，退回 CPU）
+ *    云端：OpenAI 兼容的 /audio/transcriptions 接口
+ * ===================================================================== */
+const TJS_URL = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1';
+const WORKER_CODE = `
+import { pipeline, env } from '${TJS_URL}';
+env.allowLocalModels = false;
+let asr = null;
+self.onmessage = async (e) => {
+  const d = e.data;
+  if (d.type === 'load') {
+    try {
+      const dtype = d.device === 'webgpu' ? { encoder_model: 'fp32', decoder_model_merged: 'q4' } : 'q8';
+      asr = await pipeline('automatic-speech-recognition', d.model, {
+        device: d.device, dtype,
+        progress_callback: (p) => self.postMessage({ type: 'progress', p })
+      });
+      // 预热一次，避免第一段识别特别慢
+      await asr(new Float32Array(16000), { language: d.language || undefined, task: 'transcribe' });
+      self.postMessage({ type: 'ready' });
+    } catch (err) { self.postMessage({ type: 'loadError', message: String(err && err.message || err) }); }
+  } else if (d.type === 'run') {
+    try {
+      const out = await asr(d.audio, { language: d.language || undefined, task: 'transcribe', return_timestamps: true });
+      self.postMessage({ type: 'result', id: d.id, out });
+    } catch (err) { self.postMessage({ type: 'runError', id: d.id, message: String(err && err.message || err) }); }
+  }
+};`;
+
+const WHISPER_LANG = { zh: 'chinese', en: 'english', ja: 'japanese', ko: 'korean', auto: null };
+const localEngine = {
+  worker: null, key: '', ready: null, seq: 0, pending: new Map(),
+  // 加载模型（同一模型只加载一次）；onProgress(百分比, 说明)
+  async load(onProgress) {
+    let device = settings.localDevice === 'wasm' ? 'wasm' : ((await hasWebGPU()) ? 'webgpu' : 'wasm');
+    const key = settings.localModel + '|' + device + '|' + settings.lang;
+    if (this.key === key && this.ready) return this.ready;
+    this.dispose();
+    this.key = key;
+    this.ready = this._spawn(device, onProgress).catch(async (err) => {
+      if (device !== 'webgpu') throw err;
+      // 显卡加载失败时自动改用 CPU
+      this.dispose(); device = 'wasm';
+      this.key = settings.localModel + '|wasm|' + settings.lang;
+      return this._spawn('wasm', onProgress);
+    });
+    this.ready.catch(() => { this.key = ''; this.ready = null; });
+    return this.ready;
+  },
+  _spawn(device, onProgress) {
+    return new Promise((resolve, reject) => {
+      let w;
+      try { w = new Worker(URL.createObjectURL(new Blob([WORKER_CODE], { type: 'text/javascript' })), { type: 'module' }); }
+      catch (e) { return reject(new Error('浏览器不支持本地识别，请改用云端 API')); }
+      this.worker = w;
+      this.device = device;
+      const files = {};
+      w.onmessage = (e) => {
+        const d = e.data;
+        if (d.type === 'progress' && d.p.status === 'progress' && d.p.total) {
+          files[d.p.file] = [d.p.loaded, d.p.total];
+          const [l, t] = Object.values(files).reduce((a, b) => [a[0] + b[0], a[1] + b[1]], [0, 0]);
+          onProgress?.(l / t * 100, `${fmtSize(l)} / ${fmtSize(t)}`);
+        } else if (d.type === 'ready') resolve(device);
+        else if (d.type === 'loadError') reject(new Error(d.message));
+        else if (d.type === 'result' || d.type === 'runError') {
+          const p = this.pending.get(d.id);
+          this.pending.delete(d.id);
+          if (!p) return;
+          d.type === 'result' ? p.resolve(d.out) : p.reject(new Error(d.message));
+        }
+      };
+      // 部分环境（如直接双击打开的本地文件）不允许后台线程加载模块，改在页面内运行
+      w.onerror = (e) => { e.preventDefault?.(); w.terminate(); this.worker = null; this._inline(device, onProgress).then(resolve, reject); };
+      w.postMessage({ type: 'load', model: settings.localModel, device, language: WHISPER_LANG[settings.lang] });
+    });
+  },
+  // 页面内运行（识别时界面可能略有卡顿）
+  async _inline(device, onProgress) {
+    let mod;
+    try { mod = await import(TJS_URL); }
+    catch (e) { throw new Error('识别模块加载失败，请检查网络（需要访问 cdn.jsdelivr.net 和 huggingface.co）'); }
+    mod.env.allowLocalModels = false;
+    const files = {};
+    const dtype = device === 'webgpu' ? { encoder_model: 'fp32', decoder_model_merged: 'q4' } : 'q8';
+    this.inlineAsr = await mod.pipeline('automatic-speech-recognition', settings.localModel, {
+      device, dtype,
+      progress_callback: (p) => {
+        if (p.status !== 'progress' || !p.total) return;
+        files[p.file] = [p.loaded, p.total];
+        const [l, t] = Object.values(files).reduce((a, b) => [a[0] + b[0], a[1] + b[1]], [0, 0]);
+        onProgress?.(l / t * 100, `${fmtSize(l)} / ${fmtSize(t)}`);
+      }
+    });
+    this.device = device;
+    return device;
+  },
+  // 识别一块不超过 30 秒的音频，返回带绝对时间的句子
+  async transcribe(block) {
+    const id = ++this.seq;
+    const out = this.inlineAsr
+      ? await this.inlineAsr(block.pcm, { language: WHISPER_LANG[settings.lang] || undefined, task: 'transcribe', return_timestamps: true })
+      : await new Promise((resolve, reject) => {
+      this.pending.set(id, { resolve, reject });
+      const copy = block.pcm.slice();
+      this.worker.postMessage({ type: 'run', id, audio: copy, language: WHISPER_LANG[settings.lang] }, [copy.buffer]);
+    });
+    const dur = block.pcm.length / SR;
+    if (Array.isArray(out.chunks) && out.chunks.length) {
+      return out.chunks.map(c => ({
+        start: block.start + (c.timestamp?.[0] ?? 0),
+        end: block.start + Math.min(dur, c.timestamp?.[1] ?? dur),
+        text: cleanText(c.text)
+      })).filter(s => s.text);
+    }
+    return splitTimed(out.text, block.start, dur);
+  },
+  dispose() {
+    this.worker?.terminate();
+    this.worker = null;
+    this.inlineAsr = null;
+    this.pending.forEach(p => p.reject(new Error('已取消')));
+    this.pending.clear();
+  }
+};
+async function hasWebGPU() {
+  try { return !!(navigator.gpu && await navigator.gpu.requestAdapter()); } catch (e) { return false; }
+}
+
+const cloudEngine = {
+  // 发送一个音频文件（或分片）到云端识别
+  async request(blob, filename, offset, dur, signal) {
+    const base = settings.cloudBase.replace(/\/+$/, '');
+    const send = async (verbose) => {
+      const fd = new FormData();
+      fd.append('file', blob, filename);
+      fd.append('model', settings.cloudModel);
+      if (settings.lang !== 'auto') fd.append('language', settings.lang);
+      if (verbose) fd.append('response_format', 'verbose_json');
+      return fetch(base + '/audio/transcriptions', { method: 'POST', headers: { Authorization: 'Bearer ' + settings.cloudKey }, body: fd, signal });
+    };
+    let res;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      res = await send(true);
+      if (res.status === 400) res = await send(false); // 部分服务商不支持 verbose_json
+      if (res.status !== 429 && res.status < 500) break;
+      await sleep(2000 * 2 ** attempt); // 限流或服务端错误：退避重试
+    }
+    if (res.status === 401 || res.status === 403) throw new Error('API Key 无效或没有权限');
+    if (!res.ok) throw new Error(`云端识别失败（${res.status}）${(await res.text()).slice(0, 160)}`);
+    const ct = res.headers.get('content-type') || '';
+    const data = ct.includes('json') ? await res.json() : { text: await res.text() };
+    if (Array.isArray(data.segments) && data.segments.length) {
+      return data.segments.map(s => ({ start: offset + s.start, end: offset + s.end, text: cleanText(s.text) })).filter(s => s.text);
+    }
+    return splitTimed(data.text, offset, dur || data.duration || 30);
+  },
+  transcribe(block, signal) {
+    return this.request(encodeWav([block.pcm], block.pcm.length), 'chunk.wav', block.start, block.pcm.length / SR, signal);
+  }
+};
+
+function engineLabel() { return settings.engine === 'cloud' ? '云端 API' : '本地识别'; }
+function refreshEngineLabels() {
+  $('engineLabel').textContent = engineLabel();
+  $('engineHint').textContent = settings.engine === 'cloud'
+    ? `云端 · ${settings.cloudModel || '未配置'}`
+    : `本地 · Whisper ${settings.localModel.split('-').pop()}`;
+}
+function checkEngine() {
+  if (settings.engine === 'cloud' && (!settings.cloudBase || !settings.cloudKey || !settings.cloudModel)) {
+    toast('请先在「识别设置」中填写云端 API 的地址、Key 和模型', 3500);
+    openSettings();
+    return false;
+  }
+  return true;
+}
+// 准备识别引擎；本地模式会显示模型下载进度
+async function prepareEngine(job) {
+  if (settings.engine === 'cloud') return cloudEngine;
+  const name = settings.localModel.split('/').pop();
+  jobUI(`正在加载识别模型 ${name}（首次使用需下载，之后会缓存）`, 0, '');
+  const device = await localEngine.load((pct, sub) => { if (!job.cancel) jobUI(`正在下载识别模型 ${name}（仅首次）`, pct, sub); });
+  job.device = device;
+  return localEngine;
+}
+
+/* =====================================================================
+ * 十五、上传文件 → 真实转写
+ * ===================================================================== */
+const AUDIO_EXT = ['mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg', 'oga', 'opus', 'wma', 'amr', 'ape', 'aif', 'aiff', 'caf', 'weba'];
+const VIDEO_EXT = ['mp4', 'm4v', 'mov', 'mkv', 'webm', 'avi', 'wmv', 'flv', '3gp', 'mpeg', 'mpg', 'ts'];
+const CLOUD_DIRECT_EXT = ['mp3', 'mp4', 'mpeg', 'mpga', 'm4a', 'wav', 'webm', 'ogg', 'flac'];
+let currentJob = null;
+
+$('btnUpload').onclick = () => $('fileInput').click();
+$('fileInput').onchange = (e) => { const f = e.target.files[0]; if (f) handleFile(f); e.target.value = ''; };
+const dropZone = $('newCard');
+['dragover', 'dragenter'].forEach(ev => dropZone.addEventListener(ev, e => { e.preventDefault(); dropZone.classList.add('ring-2', 'ring-blue-300'); }));
+['dragleave', 'drop'].forEach(ev => dropZone.addEventListener(ev, e => { e.preventDefault(); dropZone.classList.remove('ring-2', 'ring-blue-300'); }));
+dropZone.addEventListener('drop', e => { const f = e.dataTransfer.files[0]; if (f) handleFile(f); });
+$('jobCancel').onclick = () => {
+  if (!currentJob) return;
+  currentJob.cancel = true;
+  currentJob.abort?.abort();
+  if (settings.engine === 'local') { localEngine.dispose(); localEngine.key = ''; localEngine.ready = null; }
+  if (state.recording) stopRecording(true);
+};
+
+// 读取媒体时长（无法解析时返回 null）
+function readDuration() {
+  return new Promise(resolve => {
+    if (isFinite(media.duration) && media.duration > 0) return resolve(media.duration);
+    const done = (v) => { clearTimeout(timer); media.removeEventListener('loadedmetadata', ok); media.removeEventListener('error', fail); resolve(v); };
+    const ok = () => done(isFinite(media.duration) && media.duration > 0 ? media.duration : null);
+    const fail = () => done(null);
+    const timer = setTimeout(() => done(null), 5000);
+    media.addEventListener('loadedmetadata', ok);
+    media.addEventListener('error', fail);
+  });
+}
+
+// 开始一次新的转写：清空旧内容
+function resetForJob(title) {
+  state.isDemo = false;
+  state.segments = [];
+  state.speakers = { s1: { name: '发言人 1', color: 0 } };
+  state.summary = null;
+  state.summaryStatus = 'pending';
+  state.typoMode = false;
+  setLang('orig');
+  $('docTitle').textContent = title;
+  $('panelTranscript').scrollTop = 0;
+  switchTab('transcript');
+  renderTranscript(); renderSummary(); updateInfo();
+}
+function addSegments(list) {
+  for (const s of list) state.segments.push({ spk: 's1', start: s.start, end: s.end, text: s.text, en: '' });
+  state.segments.sort((a, b) => a.start - b.start);
+  scheduleRender();
+}
+// 收尾：修正结束时间、合并过短片段
+function finalizeSegments(duration) {
+  const segs = state.segments.filter(s => s.text);
+  const merged = [];
+  for (const s of segs) {
+    const prev = merged[merged.length - 1];
+    if (prev && s.text.length < 3 && s.start - prev.end < 1.5) { prev.text += s.text; prev.end = s.end; }
+    else merged.push(s);
+  }
+  merged.forEach((s, i) => { s.end = Math.min(s.end ?? duration, i < merged.length - 1 ? merged[i + 1].start : duration); if (s.end <= s.start) s.end = s.start + 0.5; });
+  state.segments = merged;
+}
+
+async function handleFile(file) {
+  if (state.busy) return;
+  const ext = (file.name.split('.').pop() || '').toLowerCase();
+  const isVideo = VIDEO_EXT.includes(ext) || file.type.startsWith('video');
+  const isAudio = AUDIO_EXT.includes(ext) || file.type.startsWith('audio');
+  if (!isVideo && !isAudio) return toast('不支持该文件类型，请上传音频或视频文件');
+  if (!checkEngine()) return;
+
+  const job = currentJob = { cancel: false, abort: new AbortController(), t0: performance.now() };
+  setBusy(true, '识别中');
+  resetForJob(file.name);
+  // 播放器直接引用本地文件，不读入内存
+  player.useMedia(URL.createObjectURL(file), isVideo, 0);
+  let duration = await readDuration();
+  const levels = [];
+
+  try {
+    const engine = await prepareEngine(job);
+    if (job.cancel) throw new Error('已取消');
+
+    // 云端 + 小文件：原文件直接上传，最快
+    if (engine === cloudEngine && file.size <= 24 * 1024 * 1024 && CLOUD_DIRECT_EXT.includes(ext)) {
+      jobUI(`正在上传并识别（${fmtSize(file.size)}）…`, 30, '');
+      const segs = await cloudEngine.request(file, file.name, 0, duration || 0, job.abort.signal);
+      addSegments(segs);
+      jobUI('识别完成', 100, '');
+    } else {
+      // 分块识别：本地每块约 26 秒，云端每块约 5 分钟并行上传
+      const blockSec = engine === cloudEngine ? 300 : 26;
+      const conc = engine === cloudEngine ? Math.max(1, Math.min(8, +settings.cloudConc || 4)) : 1;
+      const pool = new Set();
+      let doneSec = 0, decodedSec = 0, firstErr = null;
+      const report = () => {
+        const total = duration || decodedSec || 1;
+        const pct = doneSec / total * 100;
+        const spent = (performance.now() - job.t0) / 1000;
+        const eta = doneSec > 5 ? spent / doneSec * (total - doneSec) : null;
+        const how = engine === cloudEngine ? `云端并行 ${conc} 路` : (job.device === 'webgpu' ? '本地显卡加速' : '本地 CPU');
+        jobUI(`正在识别 ${fmt(doneSec)} / ${duration ? fmt(duration) : '--:--:--'}`, pct,
+          `${how} · ${fmtSize(file.size)}${eta != null ? ' · 预计剩余 ' + fmtDur(eta) : ''}${spent > 3 && doneSec ? ' · 速度 ' + (doneSec / spent).toFixed(1) + ' 倍实时' : ''}`);
+      };
+      report();
+      for await (const block of toBlocks(pcmSource(file, ext), blockSec)) {
+        if (job.cancel || firstErr) break;
+        const dur = block.pcm.length / SR;
+        decodedSec = block.start + dur;
+        levels.push(rms(block.pcm));
+        if (rms(block.pcm) < 0.002) { doneSec += dur; report(); continue; } // 静音块直接跳过
+        const p = engine.transcribe(block, job.abort.signal)
+          .then(segs => { if (!job.cancel) addSegments(segs); })
+          .catch(err => { firstErr = firstErr || err; })
+          .finally(() => { pool.delete(p); doneSec += dur; report(); });
+        pool.add(p);
+        if (pool.size >= conc) await Promise.race(pool);
+      }
+      await Promise.all(pool);
+      if (firstErr && !job.cancel) throw firstErr;
+      if (!duration) duration = decodedSec;
+    }
+    if (job.cancel) throw new Error('已取消');
+
+    // 浏览器无法播放该格式时，用时间轴模式浏览
+    if (!(await readDuration())) { player.useVirtual(duration || 0); }
+    player.vDur = duration || player.vDur;
+    finalizeSegments(player.duration);
+    buildWaveFromLevels(levels);
+    renderTranscript(); updateInfo();
+    const spent = (performance.now() - job.t0) / 1000;
+    toast(`转写完成：音频 ${fmtDur(player.duration)}，用时 ${fmtDur(spent)}`, 4000);
+    hideJobUI();
+    setBusy(false);
+    currentJob = null;
+    await generateSummary();
+  } catch (err) {
+    hideJobUI();
+    setBusy(false, '已停止');
+    currentJob = null;
+    finalizeSegments(player.duration || 0);
+    renderTranscript(); updateInfo();
+    if (job.cancel) toast('已取消识别，保留已识别的内容');
+    else toast(err.message || String(err), 6000);
+    if (state.segments.length) await generateSummary();
+    else { state.summaryStatus = 'pending'; renderSummary(); }
+  }
+}
+function buildWaveFromLevels(levels) {
+  if (!levels.length) return buildWave();
+  const out = [];
+  for (let i = 0; i < WAVE_BARS; i++) {
+    const a = Math.floor(i / WAVE_BARS * levels.length), b = Math.max(a + 1, Math.floor((i + 1) / WAVE_BARS * levels.length));
+    out.push(Math.max(...levels.slice(a, b)));
+  }
+  const max = Math.max(...out) || 1;
+  buildWave(out.map(v => 10 + v / max * 90));
+}
+
+/* =====================================================================
+ * 十六、麦克风实时录音 → 边录边转写
+ * ===================================================================== */
+const rec = { ctx: null, stream: null, node: null, raw: [], rawLen: 0, all: [], allLen: 0, emitted: 0, timer: 0, queue: Promise.resolve(), t0: 0, pendingBlocks: 0 };
+
+$('btnRecord').onclick = startRecording;
+$('btnStopRec').onclick = () => stopRecording(false);
+
+async function startRecording() {
+  if (state.busy) return;
+  if (!checkEngine()) return;
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); }
+  catch (e) { return toast('无法使用麦克风，请在浏览器地址栏中允许麦克风权限', 4000); }
+
+  const job = currentJob = { cancel: false, abort: new AbortController(), t0: performance.now() };
+  setBusy(true, '准备中');
+  player.pause();
+  resetForJob('实时录音 ' + new Date().toTimeString().slice(0, 5));
+  let engine;
+  try { engine = await prepareEngine(job); }
+  catch (err) { stream.getTracks().forEach(t => t.stop()); hideJobUI(); setBusy(false, '已停止'); currentJob = null; return toast(err.message, 6000); }
+  if (job.cancel) { stream.getTracks().forEach(t => t.stop()); hideJobUI(); setBusy(false, '已停止'); currentJob = null; return; }
+  hideJobUI();
+
+  state.recording = true;
+  setBusy(true, '录音中');
+  Object.assign(rec, { stream, raw: [], rawLen: 0, all: [], allLen: 0, emitted: 0, queue: Promise.resolve(), t0: performance.now(), engine, pendingBlocks: 0 });
+  rec.ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const src = rec.ctx.createMediaStreamSource(stream);
+  rec.node = rec.ctx.createScriptProcessor(4096, 1, 1);
+  const mute = rec.ctx.createGain(); mute.gain.value = 0;
+  src.connect(rec.node); rec.node.connect(mute); mute.connect(rec.ctx.destination);
+  rec.node.onaudioprocess = (e) => { const d = e.inputBuffer.getChannelData(0); rec.raw.push(new Float32Array(d)); rec.rawLen += d.length; };
+
+  $('recPanel').classList.remove('hidden');
+  $('liveRow').classList.remove('hidden');
+  // 每秒检查一次：攒够一句话的长度就在停顿处切出来送去识别
+  rec.timer = setInterval(() => {
+    $('recTime').textContent = fmt((performance.now() - rec.t0) / 1000);
+    const sr = rec.ctx.sampleRate;
+    const minLen = (engine === cloudEngine ? 12 : 6) * sr, maxLen = (engine === cloudEngine ? 20 : 25) * sr;
+    if (rec.rawLen >= minLen) {
+      const all = concatF32(rec.raw, rec.rawLen);
+      // 找最近的停顿；音频太长时强制切分
+      const cut = quietCut(all, Math.floor(Math.max(minLen * 0.6, all.length - 3 * sr)), all.length);
+      const tail = all.length - cut;
+      if (rms(all.subarray(Math.max(0, cut - 1600), cut + 1600)) < 0.02 || all.length >= maxLen) {
+        pushRecBlock(all.slice(0, cut), sr);
+        rec.raw = [all.slice(cut)]; rec.rawLen = tail;
+      }
+    }
+    $('liveText').textContent = rec.pendingBlocks ? `正在识别（排队 ${rec.pendingBlocks} 段）…` : '正在聆听…';
+  }, 1000);
+}
+
+// 把一段录音重采样后排队识别
+function pushRecBlock(rawPcm, sr) {
+  const startSec = rec.emitted / SR;
+  rec.pendingBlocks++;
+  rec.emitted += Math.round(rawPcm.length * SR / sr); // 按时长累计，保证后续块的起始时间正确
+  const p = resampleTo16k(rawPcm, sr).then(pcm => { rec.all.push(pcm); rec.allLen += pcm.length; return pcm; });
+  rec.queue = rec.queue.then(async () => {
+    const pcm = await p;
+    try {
+      if (rms(pcm) >= 0.002) addSegments(await rec.engine.transcribe({ start: startSec, pcm }, currentJob?.abort.signal));
+    } catch (err) { if (!currentJob?.cancel) toast('识别出错：' + err.message, 4000); }
+    finally { rec.pendingBlocks--; }
+  });
+}
+
+async function stopRecording(cancelled) {
+  if (!state.recording) return;
+  state.recording = false;
+  clearInterval(rec.timer);
+  rec.node.onaudioprocess = null;
+  rec.node.disconnect();
+  rec.stream.getTracks().forEach(t => t.stop());
+  const sr = rec.ctx.sampleRate;
+  if (rec.rawLen > 0.3 * sr) pushRecBlock(concatF32(rec.raw, rec.rawLen), sr);
+  rec.raw = []; rec.rawLen = 0;
+  $('recPanel').classList.add('hidden');
+  if (!cancelled) {
+    $('liveText').textContent = '正在识别最后一段…';
+    await rec.queue;
+  }
+  $('liveRow').classList.add('hidden');
+  rec.ctx.close();
+  // 录音转成 WAV 供回放
+  const duration = rec.allLen / SR;
+  player.useMedia(URL.createObjectURL(encodeWav(rec.all, rec.allLen)), false, duration);
+  player.vDur = duration;
+  buildWaveFromLevels(rec.all.flatMap(pcm => { const a = []; for (let i = 0; i < pcm.length; i += SR) a.push(rms(pcm.subarray(i, i + SR))); return a; }));
+  finalizeSegments(duration);
+  renderTranscript(); updateInfo(); onTick(false);
+  setBusy(false, cancelled ? '已停止' : '转写完成');
+  currentJob = null;
+  if (state.segments.length) await generateSummary();
+  else { toast('没有识别到语音内容'); state.summaryStatus = 'pending'; renderSummary(); }
+}
+
+/* =====================================================================
+ * 十七、大模型：纪要、翻译、纠错（OpenAI 兼容接口）
+ * ===================================================================== */
+function llmReady() { return settings.llmOn && settings.llmBase && settings.llmKey && settings.llmModel; }
+async function chat(prompt, maxTokens = 4000) {
+  const res = await fetch(settings.llmBase.replace(/\/+$/, '') + '/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + settings.llmKey },
+    body: JSON.stringify({ model: settings.llmModel, temperature: 0.2, max_tokens: maxTokens, messages: [{ role: 'user', content: prompt }] })
+  });
+  if (res.status === 401 || res.status === 403) throw new Error('大模型 API Key 无效');
+  if (!res.ok) throw new Error(`大模型请求失败（${res.status}）`);
+  const data = await res.json();
+  return String(data.choices?.[0]?.message?.content || '').replace(/<think>[\s\S]*?<\/think>/g, '');
+}
+// 从回复中取出 JSON
+function parseJson(text) {
+  const m = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+  const s = m ? m[1] : text;
+  const a = s.indexOf('{') >= 0 && (s.indexOf('[') < 0 || s.indexOf('{') < s.indexOf('[')) ? s.indexOf('{') : s.indexOf('[');
+  const b = Math.max(s.lastIndexOf('}'), s.lastIndexOf(']'));
+  return JSON.parse(s.slice(a, b + 1));
+}
+// 长逐字稿按字数截断，保证在模型上下文以内
+function transcriptForLLM(limit = 60000) {
+  let out = '', i = 0;
+  const step = Math.max(1, Math.ceil(state.segments.reduce((n, s) => n + s.text.length + 20, 0) / limit));
+  for (; i < state.segments.length; i += step) {
+    const s = state.segments[i];
+    out += `[${i}] ${fmt(s.start)} ${spk(s.spk).name}：${s.text}\n`;
+  }
+  return out;
+}
+
+async function generateSummary() {
+  if (!state.segments.length) return;
+  state.summaryStatus = 'generating';
+  renderSummary();
+  let summary = null;
+  if (llmReady()) {
+    try {
+      const prompt = `你是专业的会议纪要助手。下面是一段语音转写的逐字稿，每行格式为“[行号] 时间 发言人：内容”。
+请输出 JSON（不要输出其他内容），格式：
+{"overview":"150-300字的内容总结","chapters":[{"seg":起始行号,"title":"章节标题（不超过16字）","points":["要点1","要点2"]}],"todos":[{"text":"待办事项","owner":"负责人或空字符串","due":"截止时间或空字符串"}]}
+要求：章节按时间顺序划分为 3-12 个；每章 1-4 个要点；待办只列出明确提到需要执行的事项，没有则返回空数组。
+
+逐字稿：
+${transcriptForLLM()}`;
+      const j = parseJson(await chat(prompt));
+      summary = {
+        source: 'ai',
+        overview: String(j.overview || ''),
+        chapters: (j.chapters || []).map(c => ({ seg: Math.max(0, Math.min(state.segments.length - 1, parseInt(c.seg) || 0)), title: String(c.title || ''), points: (c.points || []).map(String) })),
+        todos: (j.todos || []).map(t => ({ text: String(t.text || ''), owner: t.owner || '', due: t.due || '', done: false })).filter(t => t.text)
+      };
+    } catch (err) {
+      toast('大模型生成纪要失败，已改用本地规则：' + err.message, 5000);
+    }
+  }
+  state.summary = summary || localSummary();
+  state.summaryStatus = 'ready';
+  renderSummary();
+}
+
+// 本地规则纪要：按关键词频率摘取代表句，按时间分章，按动作词找待办
+function localSummary() {
+  const segs = state.segments;
+  const sentences = [];
+  segs.forEach((s, i) => (s.text.match(/[^。！？!?；;]+[。！？!?；;]?/g) || [s.text]).forEach(t => { t = t.trim(); if (t.length >= 6) sentences.push({ i, t }); }));
+  // 统计双字词频
+  const freq = {};
+  const STOP = new Set(['我们', '你们', '他们', '这个', '那个', '就是', '然后', '一个', '没有', '什么', '可以', '因为', '所以', '但是', '还是', '已经', '如果', '这样', '那么', '的话', '一下', '现在', '时候', '自己', '大家', '是不', '不是', '有没']);
+  const grams = (t) => { const g = []; const c = t.replace(/[^一-龥a-zA-Z0-9]/g, ''); for (let k = 0; k + 1 < c.length; k++) g.push(c.slice(k, k + 2)); return g.filter(x => !STOP.has(x)); };
+  sentences.forEach(s => grams(s.t).forEach(g => (freq[g] = (freq[g] || 0) + 1)));
+  const score = (t) => { const g = grams(t); return g.length ? g.reduce((n, x) => n + (freq[x] || 0), 0) / Math.sqrt(g.length) : 0; };
+  sentences.forEach(s => (s.score = score(s.t) * (s.t.length > 80 ? 0.6 : 1)));
+  const top = (list, n) => [...list].sort((a, b) => b.score - a.score).slice(0, n).sort((a, b) => a.i - b.i);
+  const dur = segs[segs.length - 1].end || segs[segs.length - 1].start;
+  const short = (t, n) => t.length > n ? t.slice(0, n) + '…' : t;
+
+  const keySents = top(sentences, 4).map(s => short(s.t, 70));
+  const overview = `本次录音时长 ${fmtDur(dur)}，共 ${segs.length} 段，约 ${segs.reduce((n, s) => n + s.text.length, 0)} 字。主要内容：${keySents.join(' ') || '（内容较少）'}`;
+
+  const K = Math.max(1, Math.min(12, Math.round(dur / 300)));
+  const chapters = [];
+  for (let k = 0; k < K && segs.length >= 4; k++) {
+    const a = Math.floor(k * segs.length / K), b = Math.floor((k + 1) * segs.length / K);
+    const inWin = sentences.filter(s => s.i >= a && s.i < b);
+    if (!inWin.length) continue;
+    const best = top(inWin, 3);
+    chapters.push({ seg: a, title: short(best[0].t.replace(/[。！？!?；;，,]$/, ''), 16), points: best.slice(1).map(s => short(s.t, 60)) });
+  }
+  const ACT = /(需要|负责|跟进|落实|安排|完成|提交|处理|确认|记得|务必|尽快|下周|明天|之前|截止|发给|发到|准备)/;
+  const DUE = /(今天|明天|后天|本周[一二三四五六日天]?|下周[一二三四五六日天]?|月底|年底|周[一二三四五六日天]|\d+月\d+[日号]|\d+号)/;
+  const todos = sentences.filter(s => ACT.test(s.t)).slice(0, 10).map(s => ({
+    text: short(s.t, 80),
+    owner: (s.t.match(/([一-龥]{1,3}(?:总|经理|工|老师|主管))/) || [])[1] || (/我来|我会|我负责/.test(s.t) ? spk(segs[s.i].spk).name : ''),
+    due: (s.t.match(DUE) || [])[1] || '', done: false
+  }));
+  return { source: 'local', overview, chapters, todos };
+}
+
+// 翻译：每 40 行一批
+async function translateAll() {
+  const idx = state.segments.map((s, i) => i).filter(i => !state.segments[i].en);
+  await withLoading('正在翻译…', async (sub) => {
+    for (let k = 0; k < idx.length; k += 40) {
+      sub(`${Math.min(idx.length, k + 40)} / ${idx.length} 段`);
+      const batch = idx.slice(k, k + 40);
+      const prompt = `把下面 JSON 数组中的每一句翻译成英文，保持数组长度和顺序不变，只输出 JSON 数组：\n${JSON.stringify(batch.map(i => state.segments[i].text))}`;
+      const arr = parseJson(await chat(prompt));
+      batch.forEach((i, j) => (state.segments[i].en = String(arr[j] ?? '')));
+    }
+    // 纪要也一起翻译
+    const S = state.summary;
+    if (S && !S.overviewEn) {
+      const src = [S.overview, ...S.chapters.map(c => c.title), ...S.todos.map(t => t.text)];
+      const arr = parseJson(await chat(`把下面 JSON 数组中的每一项翻译成英文，保持长度和顺序，只输出 JSON 数组：\n${JSON.stringify(src)}`));
+      S.overviewEn = arr[0];
+      S.chapters.forEach((c, j) => (c.en = arr[1 + j]));
+      S.todos.forEach((t, j) => (t.en = arr[1 + S.chapters.length + j]));
+    }
+  });
+}
+
+// AI 纠错：每 60 行一批，找出同音错字等明显错误
+async function aiTypoCheck() {
+  const idx = state.segments.map((s, i) => i).filter(i => !state.segments[i].aiChecked);
+  await withLoading('正在智能纠错…', async (sub) => {
+    for (let k = 0; k < idx.length; k += 60) {
+      sub(`${Math.min(idx.length, k + 60)} / ${idx.length} 段`);
+      const batch = idx.slice(k, k + 60);
+      const prompt = `下面是语音识别的文本，每行格式“行号|内容”。请找出明显的错别字和同音字识别错误（不要改写语序和风格），只输出 JSON 数组：[{"i":行号,"wrong":"原文中的错误片段","right":"修改后"}]，没有错误输出 []。\n${batch.map(i => `${i}|${state.segments[i].text}`).join('\n')}`;
+      const arr = parseJson(await chat(prompt));
+      for (const t of Array.isArray(arr) ? arr : []) {
+        const seg = state.segments[+t.i];
+        if (seg && t.wrong && t.right) (seg.aiTypos = seg.aiTypos || []).push({ wrong: String(t.wrong), right: String(t.right) });
+      }
+      batch.forEach(i => (state.segments[i].aiChecked = true));
+    }
+  });
+}
+
+/* =====================================================================
+ * 十八、设置弹窗
+ * ===================================================================== */
+function openSettings() {
+  const s = settings;
+  document.querySelectorAll('input[name=engine]').forEach(r => (r.checked = r.value === s.engine));
+  $('sLocalModel').value = s.localModel; $('sLocalDevice').value = s.localDevice;
+  $('sPreset').value = s.preset; $('sCloudBase').value = s.cloudBase; $('sCloudKey').value = s.cloudKey;
+  $('sCloudModel').value = s.cloudModel; $('sCloudConc').value = s.cloudConc; $('sLang').value = s.lang;
+  $('sLlmOn').checked = s.llmOn; $('sLlmBase').value = s.llmBase; $('sLlmKey').value = s.llmKey; $('sLlmModel').value = s.llmModel;
+  syncSettingsUI();
+  hasWebGPU().then(ok => ($('gpuHint').textContent = ok ? '检测到显卡加速（WebGPU），本地识别会更快。' : '当前浏览器不支持显卡加速，本地识别将使用 CPU，长音频建议使用云端 API。'));
+  $('settingsModal').classList.remove('hidden');
+}
+function syncSettingsUI() {
+  const engine = document.querySelector('input[name=engine]:checked')?.value || 'local';
+  document.querySelectorAll('.engine-card').forEach(c => {
+    const on = c.dataset.engine === engine;
+    c.classList.toggle('border-blue-500', on); c.classList.toggle('bg-blue-50/50', on); c.classList.toggle('border-slate-200', !on);
+  });
+  $('localBox').classList.toggle('hidden', engine !== 'local');
+  $('cloudBox').classList.toggle('hidden', engine !== 'cloud');
+  $('llmBox').classList.toggle('hidden', !$('sLlmOn').checked);
+}
+document.querySelectorAll('input[name=engine]').forEach(r => r.addEventListener('change', syncSettingsUI));
+$('sLlmOn').addEventListener('change', syncSettingsUI);
+$('sPreset').addEventListener('change', (e) => {
+  const p = PRESETS[e.target.value];
+  if (e.target.value !== 'custom') { $('sCloudBase').value = p.base; $('sCloudModel').value = p.asr; }
+});
+$('sLlmCopy').onclick = () => {
+  const p = PRESETS[$('sPreset').value];
+  $('sLlmBase').value = $('sCloudBase').value; $('sLlmKey').value = $('sCloudKey').value;
+  if (p.llm) $('sLlmModel').value = p.llm;
+};
+$('settingsSave').onclick = () => {
+  Object.assign(settings, {
+    engine: document.querySelector('input[name=engine]:checked')?.value || 'local',
+    localModel: $('sLocalModel').value, localDevice: $('sLocalDevice').value,
+    preset: $('sPreset').value, cloudBase: $('sCloudBase').value.trim(), cloudKey: $('sCloudKey').value.trim(),
+    cloudModel: $('sCloudModel').value.trim(), cloudConc: Math.max(1, Math.min(8, +$('sCloudConc').value || 4)), lang: $('sLang').value,
+    llmOn: $('sLlmOn').checked, llmBase: $('sLlmBase').value.trim(), llmKey: $('sLlmKey').value.trim(), llmModel: $('sLlmModel').value.trim()
+  });
+  saveSettings();
+  refreshEngineLabels();
+  $('settingsModal').classList.add('hidden');
+  toast('设置已保存');
+};
+const closeSettings = () => $('settingsModal').classList.add('hidden');
+$('settingsClose').onclick = closeSettings;
+$('settingsCancel').onclick = closeSettings;
+$('settingsModal').addEventListener('click', (e) => { if (e.target.id === 'settingsModal') closeSettings(); });
+$('btnSettings').onclick = openSettings;
+
+/* =====================================================================
+ * 十九、键盘快捷键：空格播放/暂停（输入框内无效）
+ * ===================================================================== */
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') { closeSettings(); closeSpkMenu(); }
+  if (e.code !== 'Space') return;
+  const tag = document.activeElement?.tagName;
+  if (['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON'].includes(tag) || document.activeElement?.isContentEditable) return;
+  e.preventDefault();
+  player.toggle();
+});
+window.addEventListener('beforeunload', (e) => { if (state.busy) { e.preventDefault(); e.returnValue = ''; } });
+
+/* =====================================================================
+ * 二十、初始化：载入示例会议，页面打开即可体验
+ * ===================================================================== */
+function loadDemo() {
+  state.isDemo = true;
+  state.speakers = JSON.parse(JSON.stringify(DEMO_SPEAKERS));
+  state.segments = SCRIPT.map((s, i) => ({ ...s, end: i < SCRIPT.length - 1 ? SCRIPT[i + 1].start : DEMO_DURATION }));
+  state.summary = { source: 'ai', ...JSON.parse(JSON.stringify(DEMO_SUMMARY)) };
+  state.summary.todos.forEach(t => (t.done = false));
+  state.summaryStatus = 'ready';
+  player.useVirtual(DEMO_DURATION);
+  buildWave();
+  renderTranscript(); renderSummary(); updateInfo(); onTick(false);
+}
+setVolume(80);
+refreshEngineLabels();
+loadDemo();
+moveIndicator();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
